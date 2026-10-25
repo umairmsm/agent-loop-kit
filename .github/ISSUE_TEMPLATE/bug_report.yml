@@ -1,0 +1,48 @@
+name: Bug Report
+description: Create a report to help us fix an issue with agent-loop-kit or supervisor-router.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! Please ensure you are not posting secret keys, passwords, or private environment variables in this report.
+  - type: input
+    id: version
+    attributes:
+      label: agent-loop-kit Version / Commit
+      description: What commit or version are you running?
+      placeholder: e.g. v0.1.0 or commit sha
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Core Loop (bin/agent-loop, bin/agy-loop)
+        - Multi-Brain Router (bin/supervisor-router)
+        - Safety Guard (bin/agy-safe)
+        - Gate Runner (skills/agent-supervisor/templates/gate.sh)
+        - Session Manager (bin/agy-sessions)
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug and what behavior occurred.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Provide the exact command and task file structure to reproduce the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs or Evidence Output
+      description: Paste any relevant terminal logs (redacting secrets).
+      render: shell

@@ -68,5 +68,8 @@ examples/demo-project/docs/supervision/TASK_01_DEMO.md
 examples/demo-project/src/calculator.py
 examples/demo-project/tests/test_calculator.py
 
-# Continuous Integration (.github/)
+# Continuous Integration & Community (.github/)
 .github/workflows/ci.yml
+.github/ISSUE_TEMPLATE/bug_report.yml
+.github/ISSUE_TEMPLATE/new_gate.yml
+.github/ISSUE_TEMPLATE/new_notifier.yml

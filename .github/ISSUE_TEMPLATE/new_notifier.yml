@@ -1,0 +1,18 @@
+name: New Notifier Hook Proposal
+description: Propose or contribute an alert hook (e.g. Discord, Slack, Telegram, Matrix, ntfy.sh).
+labels: ["enhancement", "good first issue"]
+body:
+  - type: input
+    id: channel-name
+    attributes:
+      label: Notification Service
+      placeholder: e.g. Discord, Slack, PagerDuty, Matrix
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Implementation Notes
+      description: Explain the webhook API and expected payload structure.
+    validations:
+      required: true

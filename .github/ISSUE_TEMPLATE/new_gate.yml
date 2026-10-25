@@ -1,0 +1,31 @@
+name: New Gate Preset Proposal
+description: Propose or contribute a new verification gate for a programming language, framework, or tool.
+labels: ["enhancement", "good first issue"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We welcome community gate presets! Check out `docs/CONTRIBUTING_TASKS.md` for inspiration.
+  - type: input
+    id: gate-name
+    attributes:
+      label: Gate Name & Tool
+      description: What tool or linter is this gate running?
+      placeholder: e.g. Ruff (Python), Biome (JS/TS), Cargo Clippy (Rust)
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Target Language / Use Case
+      description: What projects benefit from this gate preset?
+    validations:
+      required: true
+  - type: textarea
+    id: commands
+    attributes:
+      label: Verification Command
+      description: What command will run inside the isolated detached worktree?
+      placeholder: e.g. ruff check . && ruff format --check .
+    validations:
+      required: true
