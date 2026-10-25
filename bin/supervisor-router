@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 
 CACHE_DIR = os.path.expanduser("~/.cache/agent-loop")
 COOLDOWN_FILE = os.path.join(CACHE_DIR, "quota-status.json")
+USER_CONFIG_FILE = os.path.expanduser("~/.config/agent-loop/config.json")
 
 # Default cascade order spanning independent model families
 DEFAULT_CASCADE = [
@@ -51,6 +52,173 @@ DEFAULT_CASCADE = [
     "ollama:qwen2.5-7b:latest",
     "ollama:llama3.2:3b"
 ]
+
+MODEL_SPECS = {
+    "claude": {
+        "display": "Claude 3.5 / 4 (Sonnet/Opus)",
+        "family": "Anthropic",
+        "context_window": 200_000,
+        "type": "Subscription / CLI"
+    },
+    "openrouter:qwen/qwen3-coder:free": {
+        "display": "Qwen3-Coder 480B MoE",
+        "family": "Alibaba Qwen",
+        "context_window": 1_000_000,
+        "type": "OpenRouter Free (1,000 RPD)"
+    },
+    "openrouter:deepseek/deepseek-v4.1-flash": {
+        "display": "DeepSeek V4.1 Flash",
+        "family": "DeepSeek MoE",
+        "context_window": 1_000_000,
+        "type": "OpenRouter Paid ($0.04/1M)"
+    },
+    "openrouter:openai/gpt-oss-120b:free": {
+        "display": "GPT-OSS 120B",
+        "family": "OpenAI Open-Weight",
+        "context_window": 131_072,
+        "type": "OpenRouter Free"
+    },
+    "deepseek:deepseek-chat": {
+        "display": "DeepSeek V3 / V4 Direct",
+        "family": "DeepSeek",
+        "context_window": 1_000_000,
+        "type": "DeepSeek Direct API"
+    },
+    "agy:gemini-3.8-flash-high": {
+        "display": "Gemini 3.8 Flash High",
+        "family": "Google Gemini",
+        "context_window": 1_000_000,
+        "type": "Antigravity Headless"
+    },
+    "agy:claude-sonnet-4-6": {
+        "display": "Claude Sonnet 4.6 (via AGY)",
+        "family": "Anthropic",
+        "context_window": 200_000,
+        "type": "Antigravity Headless"
+    },
+    "agy:gpt-oss-120b-medium": {
+        "display": "GPT-OSS 120B (via AGY)",
+        "family": "OpenAI Open-Weight",
+        "context_window": 131_072,
+        "type": "Antigravity Headless"
+    },
+    "ollama:deepseek-r1:latest": {
+        "display": "DeepSeek-R1 (Local)",
+        "family": "DeepSeek Reasoning",
+        "context_window": 128_000,
+        "type": "100% Offline / Infinite Quota"
+    },
+    "ollama:qwen2.5-7b:latest": {
+        "display": "Qwen 2.5 7B (Local)",
+        "family": "Alibaba Qwen",
+        "context_window": 128_000,
+        "type": "100% Offline / Infinite Quota"
+    },
+    "ollama:llama3.2:3b": {
+        "display": "Llama 3.2 3B (Local)",
+        "family": "Meta Llama",
+        "context_window": 128_000,
+        "type": "100% Offline / Infinite Quota"
+    }
+}
+
+
+def load_user_config():
+    if os.path.exists(USER_CONFIG_FILE):
+        try:
+            with open(USER_CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_user_config(cfg):
+    os.makedirs(os.path.dirname(USER_CONFIG_FILE), exist_ok=True)
+    with open(USER_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+
+
+def estimate_tokens(text):
+    return max(1, len(text) // 4)
+
+
+def print_telemetry_hud(model_id, prompt_text=""):
+    spec = MODEL_SPECS.get(model_id, {
+        "display": model_id,
+        "family": "Custom",
+        "context_window": 128_000,
+        "type": "API / CLI"
+    })
+    ctx_max = spec["context_window"]
+    est_prompt = estimate_tokens(prompt_text) if prompt_text else 0
+    tokens_left = max(0, ctx_max - est_prompt) if prompt_text else ctx_max
+    pct_left = (tokens_left / ctx_max) * 100 if ctx_max > 0 else 0
+
+    print("┌" + "─" * 68 + "┐", file=sys.stderr)
+    print(f"│ 🧠 SUPERVISOR HUD: Live Model & Token Telemetry                    │", file=sys.stderr)
+    print("├" + "─" * 68 + "┤", file=sys.stderr)
+    print(f"│ Model Active:   {spec['display'][:48]:<48} │", file=sys.stderr)
+    print(f"│ Provider ID:    {model_id[:48]:<48} │", file=sys.stderr)
+    ctx_str = f"{ctx_max:,} tokens ({spec['type']})"
+    print(f"│ Context Window: {ctx_str[:48]:<48} │", file=sys.stderr)
+    if prompt_text:
+        load_str = f"~{est_prompt:,} tokens (diff, spec, gate evidence)"
+        print(f"│ Payload Size:   {load_str[:48]:<48} │", file=sys.stderr)
+        left_str = f"~{tokens_left:,} tokens ({pct_left:.1f}% headroom left)"
+        print(f"│ Available Left: {left_str[:48]:<48} │", file=sys.stderr)
+    print(f"│ Switch Anytime: supervisor-router --switch                         │", file=sys.stderr)
+    print("└" + "─" * 68 + "┘", file=sys.stderr)
+
+
+def switch_model_interactive(target_model=None):
+    cfg = load_user_config()
+    if target_model:
+        if target_model in MODEL_SPECS or target_model in DEFAULT_CASCADE:
+            cfg["preferred_model"] = target_model
+            save_user_config(cfg)
+            print(f"\n✅ Active Supervisor switched to: {target_model}")
+            print_telemetry_hud(target_model)
+            return
+        else:
+            cfg["preferred_model"] = target_model
+            save_user_config(cfg)
+            print(f"\n✅ Active Supervisor switched to custom: {target_model}")
+            return
+
+    current = cfg.get("preferred_model", DEFAULT_CASCADE[0])
+    print("==================================================")
+    print("       Supervisor Model Switcher & Selector       ")
+    print("==================================================")
+    print(f"Current Preferred Model: {current}\n")
+    print("Choose a model to set as your primary supervisor:")
+    for idx, (m_id, spec) in enumerate(MODEL_SPECS.items(), start=1):
+        mark = "👉 (CURRENT)" if m_id == current else "  "
+        print(f"  [{idx:2}] {mark} {spec['display']:<28} | {spec['context_window']:,} ctx | {spec['type']}")
+    print("==================================================")
+    try:
+        choice = input("Enter number to select (or press Enter to keep current): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    if not choice:
+        print("Kept current model.")
+        return
+
+    try:
+        num = int(choice)
+        keys = list(MODEL_SPECS.keys())
+        if 1 <= num <= len(keys):
+            selected = keys[num - 1]
+            cfg["preferred_model"] = selected
+            save_user_config(cfg)
+            print(f"\n✅ Active Supervisor switched to: {selected}")
+            print_telemetry_hud(selected)
+        else:
+            print("Invalid selection number.")
+    except ValueError:
+        print("Please enter a valid number.")
 
 
 def ensure_cache():
@@ -134,6 +302,70 @@ def load_repo_config():
                             os.environ[k] = v
     except Exception:
         pass
+
+
+def ensure_key(provider_name):
+    """Retrieve an API key from environment, ~/.config/agent-loop/credentials.env,
+    or prompt interactively on the fly if running in a terminal."""
+    env_var = f"{provider_name.upper()}_API_KEY"
+    val = os.environ.get(env_var, "").strip()
+    if val:
+        return val
+
+    cred_file = os.path.expanduser("~/.config/agent-loop/credentials.env")
+    if os.path.exists(cred_file):
+        try:
+            with open(cred_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        if k.strip() == env_var and v.strip():
+                            val = v.strip().strip('"').strip("'")
+                            os.environ[env_var] = val
+                            return val
+        except Exception:
+            pass
+
+    # Prompt interactively on the fly if running in a terminal
+    if sys.stdin.isatty():
+        print(f"\n[supervisor-router] 🔑 {provider_name.upper()} API key is required ({env_var}).", file=sys.stderr)
+        try:
+            import getpass
+            try:
+                user_input = getpass.getpass(f"Paste your {provider_name} API key (or Enter to skip): ").strip()
+            except Exception:
+                user_input = input(f"Paste your {provider_name} API key (or Enter to skip): ").strip()
+            if not user_input:
+                user_input = input(f"Paste your {provider_name} API key (or Enter to skip): ").strip()
+            
+            if user_input:
+                os.makedirs(os.path.dirname(cred_file), exist_ok=True)
+                os.chmod(os.path.dirname(cred_file), 0o700)
+                existing = {}
+                if os.path.exists(cred_file):
+                    try:
+                        with open(cred_file, "r", encoding="utf-8") as f:
+                            for line in f:
+                                line = line.strip()
+                                if line and not line.startswith("#") and "=" in line:
+                                    k, v = line.split("=", 1)
+                                    existing[k.strip()] = v.strip()
+                    except Exception:
+                        pass
+                existing[env_var] = user_input
+                with open(cred_file, "w", encoding="utf-8") as f:
+                    for k, v in existing.items():
+                        f.write(f"{k}={v}\n")
+                os.chmod(cred_file, 0o600)
+                os.environ[env_var] = user_input
+                print(f"✅ Saved {env_var} to ~/.config/agent-loop/credentials.env (locked mode 600)!\n", file=sys.stderr)
+                return user_input
+        except (KeyboardInterrupt, EOFError):
+            print("\nSkipped key input.", file=sys.stderr)
+            return ""
+
+    return ""
 
 
 def extract_verdict_json(raw_text):
@@ -342,6 +574,15 @@ def run_review(rubric_path, prompt_text, schema_path, out_json_path, cascade=Non
     load_repo_config()
     cascade = cascade or os.environ.get("SUPERVISOR_CASCADE", "").split() or DEFAULT_CASCADE
 
+    # Reorder cascade based on preferred model in user config
+    cfg = load_user_config()
+    pref = cfg.get("preferred_model")
+    if pref:
+        if pref in cascade:
+            cascade = [pref] + [p for p in cascade if p != pref]
+        else:
+            cascade = [pref] + cascade
+
     # 1. Read rubric & schema for prefix-caching static prompt
     rubric_text = ""
     if os.path.exists(rubric_path):
@@ -401,6 +642,7 @@ Analyze the git diff, test preservation, and gate evidence. Then produce your JS
             print(f"supervisor-router: skipping {provider} ({cd_reason})", file=sys.stderr)
             continue
 
+        print_telemetry_hud(provider, system_prompt + "\n" + user_prompt)
         print(f"supervisor-router: attempting review with {provider}...", file=sys.stderr)
         raw_output = None
         err_msg = ""
@@ -410,7 +652,7 @@ Analyze the git diff, test preservation, and gate evidence. Then produce your JS
 
         elif provider.startswith("openrouter:"):
             model_name = provider.split(":", 1)[1]
-            key = os.environ.get("OPENROUTER_API_KEY", "")
+            key = ensure_key("openrouter")
             headers_extra = {
                 "HTTP-Referer": "https://github.com/agent-loop-kit/agent-loop-kit",
                 "X-Title": "Agent Loop Kit High-IQ Supervisor"
@@ -427,7 +669,7 @@ Analyze the git diff, test preservation, and gate evidence. Then produce your JS
 
         elif provider.startswith("deepseek:"):
             model_name = provider.split(":", 1)[1]
-            key = os.environ.get("DEEPSEEK_API_KEY", "")
+            key = ensure_key("deepseek")
             raw_output, err_msg = run_openai_compat(
                 base_url="https://api.deepseek.com/v1",
                 api_key=key,
@@ -592,7 +834,16 @@ def set_key_interactive(provider="openrouter"):
 
 
 def main():
-    if len(sys.argv) >= 2 and sys.argv[1] in ("--set-key", "set-key"):
+    if len(sys.argv) >= 2 and sys.argv[1] in ("--switch", "switch"):
+        target = sys.argv[2] if len(sys.argv) > 2 else None
+        switch_model_interactive(target)
+        sys.exit(0)
+    elif len(sys.argv) >= 2 and sys.argv[1] in ("--info", "info"):
+        cfg = load_user_config()
+        pref = cfg.get("preferred_model", DEFAULT_CASCADE[0])
+        print_telemetry_hud(pref)
+        sys.exit(0)
+    elif len(sys.argv) >= 2 and sys.argv[1] in ("--set-key", "set-key"):
         provider = sys.argv[2] if len(sys.argv) > 2 else "openrouter"
         set_key_interactive(provider)
         sys.exit(0)
@@ -607,7 +858,10 @@ def main():
 
     if len(sys.argv) < 5:
         print("Usage: supervisor-router <rubric.md> <prompt-text> <schema-json-or-file> <out.json>", file=sys.stderr)
-        print("       supervisor-router --status", file=sys.stderr)
+        print("       supervisor-router --status          # View all provider statuses", file=sys.stderr)
+        print("       supervisor-router --switch          # Switch active primary model", file=sys.stderr)
+        print("       supervisor-router --info            # View current model telemetry HUD", file=sys.stderr)
+        print("       supervisor-router --set-key         # Securely set API key", file=sys.stderr)
         sys.exit(2)
 
     rubric = sys.argv[1]
