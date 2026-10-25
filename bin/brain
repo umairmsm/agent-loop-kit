@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# brain — Ergonomic ultra-short CLI for the Multi-Brain Supervisor.
+# Usage:
+#   brain               # View active model HUD & token telemetry
+#   brain 1             # Switch to Claude (200k ctx)
+#   brain 2             # Switch to Qwen3-Coder 480B (1M ctx)
+#   brain 3             # Switch to DeepSeek Flash (1M ctx)
+#   brain 4             # Switch to Gemini 3.8 Flash (1M ctx)
+#   brain 5             # Switch to Local DeepSeek-R1 (Offline)
+#   brain qwen          # Switch by name (qwen, claude, deepseek, gemini, local)
+#   brain status        # View all provider statuses & cooldowns
+#   brain key           # Safely configure API key
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+ROUTER="${SCRIPT_DIR}/supervisor-router"
+[ -x "$ROUTER" ] || ROUTER="$(command -v supervisor-router)"
+
+case "${1:-}" in
+  ""|info|hud)
+    exec "$ROUTER" --info
+    ;;
+  status)
+    exec "$ROUTER" --status
+    ;;
+  key|set-key)
+    exec "$ROUTER" --set-key "${2:-openrouter}"
+    ;;
+  *)
+    exec "$ROUTER" --switch "$1"
+    ;;
+esac

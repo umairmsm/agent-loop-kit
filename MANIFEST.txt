@@ -9,6 +9,8 @@ bin/agy-loop
 bin/agent-loop
 bin/loop
 bin/supervisor-router
+bin/brain
+bin/s
 bin/agy-resume
 bin/agy-safe
 bin/agy-sessions

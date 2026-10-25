@@ -35,7 +35,7 @@ if [ -d "$KIT_DIR/skills/supervised-build" ]; then
   link "skills/supervised-build" "$CLAUDE_DIR/skills/supervised-build"
 fi
 
-for s in agy-safe agy-sessions agyr supervisor-router; do
+for s in agy-safe agy-sessions agyr supervisor-router brain s; do
   link "bin/$s" "$BIN_DIR/$s"
 done
 
