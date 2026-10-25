@@ -190,7 +190,11 @@ spec: $TASK, step $STEP (${STEPS[$((STEP-1))]})
 commit: $1   previous approved: $PREV   base branch: $BASE
 gate evidence (already run on this commit): $2 . Read it; any FAIL, ok=False, GUARD, nonzero exit, removed test, secret hit or protected path is a gate failure.
 ${extra}Follow the rubric procedure. Put any reason to escalate in escalate/escalate_reason."
-    SUPERVISOR_CASCADE="${SUPERVISOR_CASCADE:-}" "$srouter" "$rubric" "$prompt" "$R_SCHEMA" "$RUN/step-$STEP-$ATTEMPT.review.raw.json" >>"$LOG" 2>&1 || true
+    local sec_flags=()
+    if is_security || [ "${SUPERVISOR_SECOND_OPINION:-0}" = "1" ]; then
+      sec_flags=("--second-opinion")
+    fi
+    SUPERVISOR_CASCADE="${SUPERVISOR_CASCADE:-}" "$srouter" "$rubric" "$prompt" "$R_SCHEMA" "$RUN/step-$STEP-$ATTEMPT.review.raw.json" "${sec_flags[@]}" >>"$LOG" 2>&1 || true
   elif [ "$REVIEWER" = "agy" ]; then
     if ! command -v agy-review >/dev/null 2>&1; then
       stop "REVIEWER is set to 'agy' in loop.conf, but 'agy-review' was not found on PATH. Set REVIEWER='claude' or install agy-review."

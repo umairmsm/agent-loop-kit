@@ -56,8 +56,21 @@ The builder matches on the full sha, so copy it exactly. For a `BLOCKED` answer,
 - Builders ask permission for **file edits** separately from commands. Allowlisting commands isn't enough. Start Antigravity with `agy --mode accept-edits` (or press shift+tab in a session). Keep risky commands (push, merge, sudo, curl, rm) off the allowlist so they still ask the owner.
 - **Tamper detection is mandatory once edits are auto-accepted.** After writing each verdict, save a private copy and checksums of `.supervision/bin/*` outside the repo (your scratchpad). Before every review, verify both. A changed gate script or a `review.json` you didn't write is an immediate stop: tell the owner.
 
-## Fully unattended: `agy-loop` (Antigravity builds, Claude reviews, no relaying)
-- `agy-loop <task.md>` runs each `### Step N` as a headless `agy -p` build, then `gate.sh`, then a review. A step headed `### Step N [security]` goes to the Opus `security-reviewer` (mutation and bypass passes); other steps go to the Sonnet `step-reviewer`. The loop retries a step up to 3 times, and stops with an ntfy alert on BLOCKED, an escalation, a tampered gate or a failed preflight. It never pushes.
+## Fully unattended: `agy-loop` & `supervisor-router` (Multi-Brain Failover)
+- `agy-loop <task.md>` runs each `### Step N` as a headless `agy -p` build, then `gate.sh`, then a review.
+- The supervisor uses `supervisor-router` to cascade across independent model families:
+  1. `claude` (Claude Code CLI: Sonnet / Opus)
+  2. `openrouter:` (Qwen3-Coder 480B, DeepSeek V4.1 Flash, GPT-OSS 120B)
+  3. `deepseek:` (DeepSeek direct API - 1M context)
+  4. `agy:` (Antigravity Sonnet, GPT-OSS, Gemini Flash)
+  5. `ollama:` (DeepSeek-R1, Qwen2.5-7B, Llama 3.2 local offline fallback)
+- **Key Commands for the Supervisor Router:**
+  - `supervisor-router --status` : Check active models, cooldown countdowns, and key status.
+  - `supervisor-router --switch` : Interactively switch the active primary model.
+  - `supervisor-router --info`   : View real-time provider HUD telemetry.
+  - `supervisor-router --set-key <provider>` : Set API keys securely (`chmod 600` in `~/.config/agent-loop/credentials.env`).
+  - *On-the-fly prompt:* Running `supervisor-router` interactively will automatically prompt for missing keys on the fly.
+- A step headed `### Step N [security]` goes to the Opus `security-reviewer` (mutation and bypass passes); other steps go to the Sonnet `step-reviewer`. The loop retries a step up to 3 times, and stops with an ntfy alert on BLOCKED, an escalation, a tampered gate or a failed preflight. It never pushes.
 - Task header: `` Branch `x` ``, `` Base `y` `` (for stacked packages), `` Scope `regex` `` (exported as `GATE_SCOPE`). Per-repo settings go in `.supervision/loop.conf`: `REVIEW_TOOLS_EXTRA`, `PREFLIGHT`, `BUILD_EXTRA`, `HANDOFF`.
 - The gate gets `BASE_BRANCH`, `GATE_SCOPE`, `GATE_PARENT` and `GATE_PG_PROJECT` from the loop, so `gate.conf` should default them with `${VAR:-…}`. Add a revert-check probe (e.g. `probe-revert.sh`): the step's tests must fail on the parent code.
 - `--review-only <sha> --from-step N` gates and reviews an existing commit without writing `review.json`. Use it to test a reviewer on known history before trusting it. `--rebaseline` accepts deliberate edits to gate or reviewer files; the baseline lives in `~/.local/state/agy-loop/<repo>/`.
