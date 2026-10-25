@@ -25,12 +25,17 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
-      - name: Syntax Check (bash -n)
+      - name: Syntax Check
         run: |
           for f in bin/* skills/agent-supervisor/scripts/* skills/agent-supervisor/templates/*.sh examples/demo-project/*.sh; do
             if [ -f "$f" ]; then
-              echo "Checking syntax: $f"
-              bash -n "$f"
+              if head -n 1 "$f" | grep -q 'python'; then
+                echo "Checking python syntax: $f"
+                python3 -m py_compile "$f"
+              else
+                echo "Checking bash syntax: $f"
+                bash -n "$f"
+              fi
             fi
           done
 
