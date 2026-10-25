@@ -1,0 +1,72 @@
+# MANIFEST.txt - Explicit allowlist of files for agent-loop-kit
+# Any file not listed here is strictly excluded from this repository.
+
+# Plugin definition
+.claude-plugin/plugin.json
+
+# Core loop scripts (bin/)
+bin/agy-loop
+bin/agent-loop
+bin/loop
+bin/supervisor-router
+bin/agy-resume
+bin/agy-safe
+bin/agy-sessions
+bin/agyr
+bin/install-links.sh
+
+# Reviewer Skill: agent-supervisor
+skills/agent-supervisor/SKILL.md
+skills/agent-supervisor/scripts/init.sh
+skills/agent-supervisor/scripts/watch.sh
+skills/agent-supervisor/scripts/adversarial-check.py
+skills/agent-supervisor/templates/gate.sh
+skills/agent-supervisor/templates/gate.conf.example
+skills/agent-supervisor/templates/task-prompt.md
+skills/agent-supervisor/templates/wait_verdict.sh
+skills/agent-supervisor/templates/new-project-setup.md
+skills/agent-supervisor/templates/supervisor-rubric.md
+skills/agent-supervisor/references/lessons.md
+
+# Builder Skill: supervised-build
+skills/supervised-build/SKILL.md
+
+# Claude Code Reviewer Subagents (agents/)
+agents/gate-runner.md
+agents/step-reviewer.md
+agents/security-reviewer.md
+
+# Configuration
+loop.conf.example
+
+# Documentation (docs/)
+docs/ARCHITECTURE.md
+docs/CONTRIBUTING_TASKS.md
+docs/SPEC_TEMPLATE.md
+docs/SUPERVISOR_PLAYBOOK.md
+
+# Governance & Metadata
+.gitignore
+README.md
+AGENTS.md
+agent.md
+CLAUDE.md
+GEMINI.md
+.cursorrules
+LICENSE
+SECURITY.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+CHANGELOG.md
+MANIFEST.txt
+
+# Verification & Demo (examples/demo-project/)
+examples/demo-project/gate.sh
+examples/demo-project/gate.conf
+examples/demo-project/run-demo.sh
+examples/demo-project/docs/supervision/TASK_01_DEMO.md
+examples/demo-project/src/calculator.py
+examples/demo-project/tests/test_calculator.py
+
+# Continuous Integration (.github/)
+.github/workflows/ci.yml

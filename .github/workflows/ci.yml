@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Lint, Scan and Demo Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Syntax Check (bash -n)
+        run: |
+          for f in bin/* skills/agent-supervisor/scripts/* skills/agent-supervisor/templates/*.sh examples/demo-project/*.sh; do
+            if [ -f "$f" ]; then
+              echo "Checking syntax: $f"
+              bash -n "$f"
+            fi
+          done
+
+      - name: ShellCheck Linter
+        run: |
+          for f in bin/agent-loop bin/loop bin/agy-loop bin/agy-safe bin/agy-resume bin/install-links.sh skills/agent-supervisor/scripts/*.sh skills/agent-supervisor/templates/gate.sh skills/agent-supervisor/templates/wait_verdict.sh examples/demo-project/*.sh; do
+            if [ -f "$f" ]; then
+              echo "Linting: $f"
+              shellcheck "$f"
+            fi
+          done
+
+      - name: Gitleaks Secret Scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Demo Project Smoke Test
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          cd examples/demo-project
+          ./run-demo.sh

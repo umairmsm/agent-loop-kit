@@ -1,0 +1,358 @@
+#!/usr/bin/env bash
+# agy-loop: run a supervised task file unattended, one step at a time.
+#
+#   agy-loop <task-file> [--from-step N] [--max-attempts 3]
+#   agy-loop <task-file> --review-only <sha> --from-step N   # gate + review an existing commit, no build
+#   agy-loop <task-file> --rebaseline                        # a human accepts the current gate files
+#
+# For each "### Step N" in the task file:
+#   1. Antigravity builds ONLY that step (fresh headless session, agy -p), commits.
+#   2. gate.sh collects evidence (tests, lint, probes) on that exact commit.
+#   3. Claude reviews diff + evidence against the spec: step-reviewer (sonnet), or
+#      security-reviewer (opus, adversarial) for a step headed "### Step N [security]".
+#   4. APPROVED -> next step. CHANGES_REQUIRED -> builder fixes (max 3 tries).
+#      ESCALATE / BLOCKED / 3 failures / tampered gate -> stop and send a phone alert.
+# It never merges, pushes or deploys. When done, ask Claude for the final review.
+#
+# Task file header (all optional):  Branch `x`   Base `y` (default master/main)   Scope `regex`
+# Per-repo settings (optional): .supervision/loop.conf, sourced; see the defaults below.
+# State: .supervision/loop-state.json  Log: .supervision/loop.log
+# Ledger of every agy session it starts: ~/.local/state/agy-loop/sessions.jsonl (see agy-sessions)
+set -uo pipefail
+
+TASK_ARG="${1:-}"; shift || true
+FROM=""; MAX=3; REVIEW_ONLY=""; REBASELINE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --from-step) FROM="$2"; shift ;;
+    --max-attempts) MAX="$2"; shift ;;
+    --review-only) REVIEW_ONLY="$2"; shift ;;
+    --rebaseline) REBASELINE=1 ;;
+    *) echo "unknown option $1" >&2; exit 2 ;;
+  esac; shift
+done
+[ -f "$TASK_ARG" ] || { echo "usage: agy-loop <task-file> [--from-step N] [--review-only SHA] [--rebaseline]" >&2; exit 2; }
+
+TASK_ABS="$(realpath "$TASK_ARG")"
+REPO="$(git -C "$(dirname "$TASK_ABS")" rev-parse --show-toplevel)" || exit 2
+TASK="${TASK_ABS#"$REPO"/}"
+cd "$REPO" || exit 2
+SUP="$REPO/.supervision"; RUN="$SUP/loop"; STATE="$SUP/loop-state.json"; LOG="$SUP/loop.log"
+STATE_HOME="$HOME/.local/state/agy-loop"; LEDGER="$STATE_HOME/sessions.jsonl"
+TAMPER="$STATE_HOME/$(basename "$REPO")/tamper.sha256"
+mkdir -p "$RUN" "$(dirname "$TAMPER")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AGY="${BUILDER_BIN:-$(command -v agy-safe || command -v agy || echo "agy")}"
+
+# ---- per-repo settings (.supervision/loop.conf overrides these) --------------------------
+SUPERVISOR_CASCADE=""        # e.g. "claude agy:gemini-3.8-flash-high agy:gpt-oss-120b-medium ollama:deepseek-r1"
+REVIEW_TOOLS_EXTRA=""        # e.g. ",Bash(node_modules/.bin/jest:*),Bash(git worktree:*)"
+PREFLIGHT=""                 # command that must succeed before each gate (e.g. docker info)
+BUILD_EXTRA=""               # extra lines for the builder prompt
+SECURITY_AGENT="security-reviewer"; SECURITY_MODEL="opus"
+STEP_AGENT="step-reviewer";  STEP_MODEL="sonnet"
+REVIEWER="claude"            # claude = claude -p --agent; agy = agy-review (any Antigravity model, read-only)
+CLAIMS_AUDIT="${CLAIMS_AUDIT:-0}"             # 1 = after an APPROVED [content] step, run agy-claims-audit; FAIL stops the loop
+HANDOFF=""                   # file to append one line per verdict (e.g. .supervision/HANDOFF.md)
+AGY_ACCOUNT=""               # Google account agy must be logged in as (e.g. "developer@example.com"); "" = any
+NTFY_TOPIC=""                # Optional ntfy.sh topic for push notifications; "" = check ~/.config/agy-guard/ntfy-topic or disabled
+TAMPER_FILES=(".supervision/bin" ".supervision/gate.conf" ".supervision/loop.conf" ".supervision/probes" ".supervision/rubrics"
+  "$HOME/.claude/agents/step-reviewer.md" "$HOME/.claude/agents/security-reviewer.md" "$HOME/.local/bin/agy-loop")
+# shellcheck source=/dev/null
+[ -f "$SUP/loop.conf" ] && source "$SUP/loop.conf"
+
+say() { echo "$(date '+%F %T') $*" | tee -a "$LOG"; }
+notify() {
+  local topic="${NTFY_TOPIC:-}"
+  if [ -z "$topic" ] && [ -f "$HOME/.config/agy-guard/ntfy-topic" ]; then
+    topic="$(cat "$HOME/.config/agy-guard/ntfy-topic" 2>/dev/null || true)"
+  fi
+  [ -z "$topic" ] && return 0
+  curl -s -m 8 -H "Title: $1" -H "Priority: ${3:-default}" -d "$2" "https://ntfy.sh/$topic" >/dev/null 2>&1 || true
+}
+stop() { say "STOP: $1"; notify "agy-loop stopped ($(basename "$REPO"))" "$1" high; exit 1; }
+json() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); v=eval(sys.argv[2], {}, {'d': d}); print(v if v is not None else '')" "$@" 2>/dev/null; }
+handoff() { [ -n "$HANDOFF" ] && printf -- '- %s agy-loop: %s\n' "$(date -Is)" "$*" >> "$REPO/$HANDOFF"; }
+# agy has ONE login per Linux user, shared by every repo: switching accounts for one project
+# switches it for every running loop. Each repo names its account; a mismatch stops before building.
+agy_account() {  # prints the email agy is logged in as ("" if unknown); about 10 s
+  local l; l="$(mktemp)"
+  timeout 90 "$AGY" --log-file "$l" models </dev/null >/dev/null 2>&1
+  grep -m1 -oE 'applyAuthResult: email=[^ ,]+' "$l" | sed 's/.*email=//'; rm -f "$l"
+}
+check_account() {
+  [ -n "$AGY_ACCOUNT" ] || return 0
+  case "$AGY" in *agy*) ;; *) return 0 ;; esac
+  local a; a="$(agy_account)"
+  [ "$a" = "$AGY_ACCOUNT" ] || stop "this repo needs Antigravity logged in as $AGY_ACCOUNT, but it is ${a:-unknown (logged out?)}. Switch accounts in agy, then rerun agy-loop $TASK. Only one account can be active, so run one loop at a time."
+}
+ledger() {  # id step attempt verdict
+  [ -n "$1" ] || return 0
+  python3 - "$LEDGER" "$1" "$(basename "$REPO")" "$TASK" "$2" "$3" "$4" <<'PY'
+import json,sys,datetime; p,i,repo,task,step,att,v=sys.argv[1:]
+open(p,"a").write(json.dumps({"id":i,"repo":repo,"task":task,"step":int(step),"attempt":int(att),
+  "verdict":v,"time":datetime.datetime.now(datetime.timezone.utc).isoformat()})+"\n")
+PY
+}
+
+# ---- tamper guard ---------------------------------------------------------------------------
+# -L: agy-loop and the agents are symlinks into devops/agent-team; plain find skips a symlinked file.
+tamper_sums() { for f in "${TAMPER_FILES[@]}"; do [ -e "$f" ] && find -L "$f" -type f -print0; done | sort -z | xargs -0 sha256sum; }
+if [ "$REBASELINE" = 1 ]; then tamper_sums > "$TAMPER"; echo "tamper baseline saved: $TAMPER ($(wc -l < "$TAMPER") files)"; exit 0; fi
+[ -s "$TAMPER" ] || { tamper_sums > "$TAMPER"; say "tamper baseline created: $TAMPER"; }
+tamper_check() {
+  local diff; diff="$(diff <(tamper_sums) "$TAMPER")" || \
+    stop "gate or reviewer files changed since the baseline: $(echo "$diff" | grep -E '^[<>]' | awk '{print $NF}' | sort -u | tr '\n' ' '). If you made this change, run: agy-loop $TASK --rebaseline"
+}
+
+export AGY_LOOP=1   # lets the guard keep a run going while its own tests are still running
+exec 9>"$SUP/loop.lock"; flock -n 9 || { echo "another agy-loop is running in $REPO" >&2; exit 1; }
+
+# ---- the plan ------------------------------------------------------------------
+mapfile -t STEPS < <(grep -E '^### Step [0-9]+' "$TASK")
+N=${#STEPS[@]}; [ "$N" -gt 0 ] || stop "no '### Step N' headings in $TASK"
+field() { grep -oE "$1 \`[^\`]+\`" "$TASK" | head -1 | sed "s/$1 \`\(.*\)\`/\1/"; }
+BRANCH="$(field Branch)"; [ -n "$BRANCH" ] || BRANCH="agy/$(basename "$TASK" .md | tr 'A-Z_' 'a-z-')"
+BASE="$(field Base)"
+if [ -z "$BASE" ]; then BASE="master"; git rev-parse -q --verify main >/dev/null && ! git rev-parse -q --verify master >/dev/null && BASE="main"; fi
+git rev-parse -q --verify "$BASE" >/dev/null || stop "base $BASE does not exist"
+export BASE_BRANCH="$BASE"
+SCOPE="$(field Scope)"; [ -n "$SCOPE" ] && export GATE_SCOPE="$SCOPE"
+is_security() { [[ "${STEPS[$((STEP-1))]}" == *"[security]"* ]]; }
+
+if [ -z "$REVIEW_ONLY" ]; then
+  [ -z "$(git status --porcelain --untracked-files=no)" ] || stop "working tree has uncommitted changes; commit or stash them first"
+  if git rev-parse -q --verify "$BRANCH" >/dev/null; then git switch -q "$BRANCH" || stop "cannot switch to $BRANCH"
+  else git switch -q -c "$BRANCH" "$BASE" || stop "cannot create $BRANCH"; fi
+fi
+
+STEP=1; ATTEMPT=1; FEEDBACK=""; PENDING=""; PREV="$(git merge-base "$BASE" HEAD)"
+if [ -z "$REVIEW_ONLY" ] && [ -f "$STATE" ] && [ "$(json "$STATE" "d['task']")" = "$TASK" ]; then
+  STEP="$(json "$STATE" "d['step']")"; ATTEMPT="$(json "$STATE" "d['attempt']")"
+  FEEDBACK="$(json "$STATE" "d.get('feedback','')")"; PREV="$(json "$STATE" "d['prev']")"
+  PENDING="$(json "$STATE" "d.get('pending','')")"
+  ATTEMPT=1   # a human re-ran the loop: give the step fresh attempts
+  say "resuming $TASK at step $STEP attempt $ATTEMPT"
+fi
+[ -n "$FROM" ] && { STEP="$FROM"; ATTEMPT=1; FEEDBACK=""; PENDING=""; }
+save() {
+  [ -n "$REVIEW_ONLY" ] && return 0
+  python3 - "$STATE" "$TASK" "$STEP" "$ATTEMPT" "$PREV" "$FEEDBACK" "$BRANCH" "$PENDING" <<'PY'
+import json,sys; p,t,s,a,prev,fb,br,pend=sys.argv[1:]
+json.dump({"task":t,"step":int(s),"attempt":int(a),"prev":prev,"feedback":fb,"branch":br,"pending":pend},open(p,"w"),indent=1)
+PY
+}
+
+B_SCHEMA='{"type":"object","properties":{"status":{"type":"string","enum":["DONE","BLOCKED"]},"commit":{"type":"string"},"summary":{"type":"string"},"question":{"type":"string"}},"required":["status","commit","summary","question"]}'
+R_SCHEMA='{"type":"object","properties":{"verdict":{"type":"string","enum":["APPROVED","CHANGES_REQUIRED"]},"escalate":{"type":"boolean"},"escalate_reason":{"type":"string"},"fix_list":{"type":"array","items":{"type":"string"}},"notes":{"type":"string"}},"required":["verdict","escalate","escalate_reason","fix_list","notes"]}'
+echo "$B_SCHEMA" > "$RUN/builder-schema.json"
+REVIEW_TOOLS="Read,Grep,Glob,Bash(git:*),Bash(curl:*),Bash(grep:*),Bash(sed:*),Bash(cat:*),Bash(ls:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(diff:*),Bash(php -l:*),Bash(npx playwright test:*)${REVIEW_TOOLS_EXTRA}"
+
+build_prompt() {
+  cat <<EOF
+You are the BUILDER in an unattended loop. No human is watching this session: do not ask questions.
+Read AGENTS.md and CLAUDE.md if present, then the task file $TASK$( [ -f "$(dirname "$TASK")/TASK_COMMON.md" ] && echo " and $(dirname "$TASK")/TASK_COMMON.md"). Their Hard rules apply.
+Do ONLY: ${STEPS[$((STEP-1))]}
+Earlier steps are already done and approved on this branch ($BRANCH, based on $BASE). Do not redo or change them unless a fix below says so.
+$( [ -n "$FEEDBACK" ] && printf 'The reviewer rejected your previous attempt. Fix exactly these items, then commit again:\n%s\n' "$FEEDBACK")
+Run every check the task lists for this step and read the raw output, not a summary.
+Run long commands (test suites, builds) in the FOREGROUND and wait for them to finish. Never end your turn while a command is still running, and never reply that you "will wait": this session ends when you stop.
+Commit once (Conventional Commits, step ID in the subject) and leave the working tree clean. Make a NEW commit; do not amend unless a fix above says so.
+Never edit anything under .supervision/ and never write review verdicts. This runner reviews your commit.
+IGNORE the task's "Supervision protocol" section: do NOT write .supervision/ag_status.json and do NOT poll review.json.
+${BUILD_EXTRA}
+If the step needs a decision the task does not cover, or anything the rules forbid, do not guess: answer BLOCKED with the question, the options and your recommendation.
+Answer in the JSON schema: status, commit (full sha from git rev-parse HEAD, or "" if none), summary (what changed, test counts, anything that failed), question ("" if none).
+EOF
+}
+
+review() {  # $1 = sha, $2 = evidence file -> writes $RUN/step-$STEP-$ATTEMPT.review.json
+  local agent="$STEP_AGENT" model="$STEP_MODEL" extra=""
+  if is_security; then
+    agent="$SECURITY_AGENT"; model="$SECURITY_MODEL"
+    extra="This step is tagged [security]: run the mutation and bypass passes from your procedure before deciding. "
+  fi
+
+  local srouter=""
+  if command -v supervisor-router >/dev/null 2>&1; then
+    srouter="$(command -v supervisor-router)"
+  elif [ -f "$SCRIPT_DIR/supervisor-router" ]; then
+    srouter="$SCRIPT_DIR/supervisor-router"
+  fi
+
+  if [ -n "$srouter" ] && [ -x "$srouter" ]; then
+    say "step $STEP: review via supervisor-router (cascade: ${SUPERVISOR_CASCADE:-default})"
+    local rubric="$SUP/rubrics/step-review.md"
+    [ -f "$rubric" ] || rubric="$SCRIPT_DIR/../skills/agent-supervisor/templates/supervisor-rubric.md"
+    local prompt="Review one builder step for the unattended loop.
+repo: $REPO
+spec: $TASK, step $STEP (${STEPS[$((STEP-1))]})
+commit: $1   previous approved: $PREV   base branch: $BASE
+gate evidence (already run on this commit): $2 . Read it; any FAIL, ok=False, GUARD, nonzero exit, removed test, secret hit or protected path is a gate failure.
+${extra}Follow the rubric procedure. Put any reason to escalate in escalate/escalate_reason."
+    SUPERVISOR_CASCADE="${SUPERVISOR_CASCADE:-}" "$srouter" "$rubric" "$prompt" "$R_SCHEMA" "$RUN/step-$STEP-$ATTEMPT.review.raw.json" >>"$LOG" 2>&1 || true
+  elif [ "$REVIEWER" = "agy" ]; then
+    if ! command -v agy-review >/dev/null 2>&1; then
+      stop "REVIEWER is set to 'agy' in loop.conf, but 'agy-review' was not found on PATH. Set REVIEWER='claude' or install agy-review."
+    fi
+    say "step $STEP: review by agy-review (${AGY_REVIEW_MODEL:-claude-sonnet-4-6})"
+    AGY_REVIEW_LOG="$LOG" agy-review "$SUP/rubrics/step-review.md" "Review one builder step for the unattended loop.
+repo: $REPO
+spec: $TASK, step $STEP (${STEPS[$((STEP-1))]})
+commit: $1   previous approved: $PREV   base branch: $BASE
+gate evidence (already run on this commit): $2 . Read it; any FAIL, ok=False, GUARD, nonzero exit, removed test, secret hit or protected path is a gate failure.
+${extra}Follow the rubric procedure. Put any reason to escalate in escalate/escalate_reason." "$R_SCHEMA" "$RUN/step-$STEP-$ATTEMPT.review.raw.json"
+  else
+    say "step $STEP: review by $agent ($model)"
+    claude -p "Review one builder step for the unattended loop.
+repo: $REPO
+spec: $TASK, step $STEP (${STEPS[$((STEP-1))]})
+commit: $1   previous approved: $PREV   base branch: $BASE
+gate evidence (already run on this commit): $2 . Read it; any FAIL, ok=False, GUARD, nonzero exit, removed test, secret hit or protected path is a gate failure.
+${extra}Follow your procedure. Put any reason to escalate in escalate/escalate_reason. Answer in the JSON schema." \
+      --agent "$agent" --model "$model" --output-format json --json-schema "$R_SCHEMA" \
+      --append-system-prompt "In this run your final answer must be the structured JSON output, not the text format in your Output section. Put the per-file, spec-item and test findings in notes." \
+      --allowedTools "$REVIEW_TOOLS" --disallowedTools "Bash(git push:*),Bash(git commit:*),Bash(git reset:*),Bash(git checkout:*),Bash(git switch:*),Bash(git rebase:*),Bash(git merge:*),Bash(curl -X:*),Bash(curl -d:*)" > "$RUN/step-$STEP-$ATTEMPT.review.raw.json" 2>>"$LOG"
+  fi
+  python3 - "$RUN/step-$STEP-$ATTEMPT.review.raw.json" "$RUN/step-$STEP-$ATTEMPT.review.json" <<'PY'
+import json,sys; d=json.load(open(sys.argv[1])); s=d.get("structured_output") or {}
+if not s.get("verdict"): open(sys.argv[2]+".text","w").write(d.get("result") or "")
+json.dump(s,open(sys.argv[2],"w"),indent=1); sys.exit(0 if s.get("verdict") else 1)
+PY
+  # shellcheck disable=SC2181
+  [ $? -eq 0 ] && return 0
+  # Fallback: the reviewer answered in text. Convert it (haiku) without changing its decision.
+  local txt="$RUN/step-$STEP-$ATTEMPT.review.json.text"
+  [ -s "$txt" ] || return 1
+  say "step $STEP: reviewer answered in text; converting"
+  if [ "$REVIEWER" = "agy" ]; then
+    if command -v review-text-to-json >/dev/null 2>&1; then
+      review-text-to-json "$txt" "$RUN/step-$STEP-$ATTEMPT.review.json"; return $?
+    else
+      say "step $STEP: review-text-to-json not found on PATH; falling back to Claude conversion"
+    fi
+  fi
+  claude -p "Convert this code review into the JSON schema. Copy the decision exactly: verdict APPROVED only if the review says APPROVED; escalate true only if it says escalate: true. fix_list = its numbered fix list (empty if none). notes = its evidence notes, short.
+
+$(cat "$txt")" --model haiku --output-format json --json-schema "$R_SCHEMA" > "$RUN/step-$STEP-$ATTEMPT.review.conv.json" 2>>"$LOG"
+  python3 -c 'import json,sys; s=json.load(open(sys.argv[1])).get("structured_output") or {}; json.dump(s,open(sys.argv[2],"w"),indent=1); sys.exit(0 if s.get("verdict") else 1)' \
+    "$RUN/step-$STEP-$ATTEMPT.review.conv.json" "$RUN/step-$STEP-$ATTEMPT.review.json"
+}
+
+gate_and_review() {  # $1 = sha; sets VERDICT ESC R
+  tamper_check
+  if [ -n "$PREFLIGHT" ]; then
+    (bash -c "$PREFLIGHT") >>"$LOG" 2>&1 || stop "preflight failed ($PREFLIGHT). Fix the machine (docker, disk, node_modules), then rerun agy-loop $TASK"
+  fi
+  say "step $STEP: gate"
+  export GATE_PARENT="$PREV"
+  export GATE_PG_PROJECT="loop-$$"   # own throwaway Postgres; never collides with a manual gate
+  EV="$(GATE_OUT="$SUP/evidence/$(git rev-parse --short "$1").loop.txt" "$SUP/bin/gate.sh" "$1")" || stop "gate.sh crashed on $1"
+  tamper_check   # the gate ran the builder's code; make sure it did not touch the gate
+  review "$1" "$EV" || stop "the reviewer gave no verdict for $1 (see $LOG)"
+  R="$RUN/step-$STEP-$ATTEMPT.review.json"
+  VERDICT="$(json "$R" "d['verdict']")"; ESC="$(json "$R" "d['escalate']")"
+  [ -z "$REVIEW_ONLY" ] && python3 - "$SUP/review.json" "$STEP" "$1" "$R" "$(is_security && echo "$SECURITY_AGENT ($SECURITY_MODEL)" || echo "$STEP_AGENT ($STEP_MODEL)")" <<'PY'
+import json,sys; p,step,sha,r,who=sys.argv[1:]; d=json.load(open(r))
+v="ESCALATED" if d.get("escalate") else d["verdict"]
+json.dump({"step":step,"commit":sha,"verdict":v,"notes":d.get("notes",""),
+           "fix_list":d.get("fix_list",[]),"reviewer":f"agy-loop {who}"},open(p,"w"),indent=1)
+PY
+  say "step $STEP: $VERDICT escalate=$ESC — $(json "$R" "d['notes']")"
+  [ -z "$REVIEW_ONLY" ] && handoff "step $STEP $(git rev-parse --short "$1") $VERDICT$( [ "$ESC" = "True" ] && echo " ESCALATED")"
+  return 0
+}
+
+# ---- review-only mode (never writes review.json, HANDOFF or loop state) -----------------
+if [ -n "$REVIEW_ONLY" ]; then
+  SHA="$(git rev-parse "$REVIEW_ONLY")" || stop "no such commit $REVIEW_ONLY"
+  PREV="$(git rev-parse "$SHA^")"; ATTEMPT="ro-$(date +%H%M%S)"
+  say "review-only: step $STEP on $(git log -1 --format='%h %s' "$SHA")"
+  gate_and_review "$SHA"
+  echo "verdict: $VERDICT escalate=$ESC   ($RUN/step-$STEP-$ATTEMPT.review.json)"
+  exit 0
+fi
+
+notify "agy-loop started ($(basename "$REPO"))" "$TASK on $BRANCH (base $BASE): $N steps, from step $STEP" low
+
+# ---- the loop ------------------------------------------------------------------
+while [ "$STEP" -le "$N" ]; do
+  [ "$ATTEMPT" -le "$MAX" ] || stop "step $STEP failed review $MAX times. Ask Claude to look at $RUN"
+  CID=""
+  if [ -n "$PENDING" ] && [ "$PENDING" = "$(git rev-parse HEAD)" ]; then
+    HEAD="$PENDING"; say "step $STEP: commit $(git log -1 --format=%h "$HEAD") already built; re-checking it"
+  else
+  save; check_account; say "step $STEP/$N attempt $ATTEMPT: building — ${STEPS[$((STEP-1))]}"
+  BEFORE="$(git rev-parse HEAD)"; OUT="$RUN/step-$STEP-$ATTEMPT.agy.json"
+  "$AGY" -p "$(build_prompt)" --mode accept-edits --output-format json \
+    --json-schema "$RUN/builder-schema.json" --print-timeout 45m > "$OUT" 2>>"$LOG"
+  rc=$?
+  CID="$(json "$OUT" "d.get('conversation_id')")"; ledger "$CID" "$STEP" "$ATTEMPT" "BUILT"
+  STATUS="$(json "$OUT" "d['structured_output']['status']")"
+  SUMMARY="$(json "$OUT" "d['structured_output']['summary']")"
+  if [ "$STATUS" = "BLOCKED" ]; then
+    Q="$(json "$OUT" "d['structured_output']['question']")"
+    ledger "$CID" "$STEP" "$ATTEMPT" "BLOCKED"
+    printf '\n## %s step %s (%s)\n%s\n' "$(date '+%F %T')" "$STEP" "$TASK" "$Q" >> "$SUP/QUESTIONS.md"
+    handoff "step $STEP BLOCKED: $Q"
+    stop "step $STEP BLOCKED: $Q (also in .supervision/QUESTIONS.md). Answer it to Claude, then rerun agy-loop $TASK"
+  fi
+  HEAD="$(git rev-parse HEAD)"
+  problem=""
+  [ "$rc" -eq 0 ] || problem="the builder run failed or timed out (exit $rc)"
+  # agy sometimes ends without a structured answer; a real commit is still reviewable.
+  [ -z "$problem" ] && [ -z "$STATUS" ] && SUMMARY="(builder gave no summary; review the commit itself)"
+  # an API error after the commit still leaves a reviewable commit
+  [ -n "$problem" ] && [ "$HEAD" != "$BEFORE" ] && [ -z "$(git status --porcelain --untracked-files=no)" ] && \
+    { say "step $STEP: $problem, but commit $(git log -1 --format=%h "$HEAD") exists; reviewing it"; problem=""; }
+  [ -z "$problem" ] && [ "$HEAD" = "$BEFORE" ] && problem="no new commit was made"
+  [ -z "$problem" ] && [ "$(git branch --show-current)" != "$BRANCH" ] && problem="you left branch $BRANCH; stay on it"
+  [ -z "$problem" ] && [ -n "$(git status --porcelain --untracked-files=no)" ] && problem="uncommitted changes were left; commit everything for this step"
+  if [ -n "$problem" ]; then
+    say "step $STEP attempt $ATTEMPT: $problem"
+    ledger "$CID" "$STEP" "$ATTEMPT" "FAILED"
+    [ "$(git branch --show-current)" = "$BRANCH" ] || git switch -q "$BRANCH"
+    FEEDBACK="1. Last attempt problem: $problem"
+    AGY_ERR="$(json "$OUT" "d.get('status')")"
+    if { [ "$rc" -ne 0 ] || [ "$AGY_ERR" = "ERROR" ]; } && [ "$HEAD" = "$BEFORE" ]; then
+      # builder infrastructure (auth, API timeout) with no commit: retry without using a review attempt
+      # (check_account runs again before the retry, so an account switch still stops the loop)
+      INFRA=$(( ${INFRA:-0} + 1 ))
+      [ "$INFRA" -le 3 ] || stop "step $STEP: Antigravity failed $INFRA times in a row without committing (last: exit $rc). Check agy login/network, then rerun agy-loop $TASK"
+      say "step $STEP: builder infrastructure failure $INFRA/3; retrying the same attempt in 60s"; sleep 60; continue
+    fi
+    INFRA=0; ATTEMPT=$((ATTEMPT+1)); continue
+  fi
+  say "step $STEP: commit $(git log -1 --format='%h %s' "$HEAD") — $SUMMARY"
+  PENDING="$HEAD"; save
+  fi
+
+  gate_and_review "$HEAD"
+  ledger "$CID" "$STEP" "$ATTEMPT" "$( [ "$ESC" = "True" ] && echo ESCALATED || echo "$VERDICT")"
+  if [ "$ESC" = "True" ]; then
+    stop "step $STEP needs your decision: $(json "$R" "d['escalate_reason']"). Ask Claude (commit $HEAD)"
+  fi
+  if [ "$VERDICT" = "APPROVED" ] && [ "$CLAIMS_AUDIT" = "1" ] && [[ "${STEPS[$((STEP-1))]}" == *"[content]"* ]]; then
+    if command -v agy-claims-audit >/dev/null 2>&1; then
+      say "step $STEP: claims audit (content step)"
+      agy-claims-audit "$TASK" "$STEP" "$HEAD" "$PREV"; ca=$?
+      say "step $STEP: claims audit exit $ca ($SUP/audits/step-$STEP-${HEAD:0:7}.md; 0 PASS, 1 PASS WITH FIXES, 2 FAIL, 3 no answer)"
+      [ "$ca" -eq 2 ] && stop "step $STEP needs your decision: claims audit FAIL, see $SUP/audits/step-$STEP-${HEAD:0:7}.md"
+      [ "$ca" -eq 1 ] && notify "Claims audit: fixes" "step $STEP PASS WITH FIXES, see $SUP/audits/" default
+    else
+      say "step $STEP: claims audit skipped (agy-claims-audit not installed on PATH)"
+    fi
+  fi
+  if [ "$VERDICT" = "APPROVED" ]; then
+    PREV="$HEAD"; STEP=$((STEP+1)); ATTEMPT=1; FEEDBACK=""; PENDING=""; save
+  else
+    FEEDBACK="$(json "$R" "'\n'.join(f'{i+1}. {x}' for i,x in enumerate(d['fix_list']))")"
+    ATTEMPT=$((ATTEMPT+1)); PENDING=""; save
+  fi
+done
+
+say "all $N steps APPROVED on $BRANCH"
+handoff "all $N steps of $TASK APPROVED on $BRANCH; waiting for the final review"
+rm -f "$STATE"
+command -v agy-sessions >/dev/null && { agy-sessions archive --loop-done --yes >>"$LOG" 2>&1 || say "loop sessions not archived (agy still open); run: agy-sessions archive --loop-done --yes"; }
+notify "agy-loop finished ($(basename "$REPO"))" "All $N steps of $TASK approved on $BRANCH. Ask Claude for the final review and merge." high

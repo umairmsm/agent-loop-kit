@@ -1,0 +1,29 @@
+# agent-loop-kit .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Supervision runtime artifacts
+.supervision/
+*.review.json
+*.review.raw.json
+*.review.json.text
+
+# Node / JS
+node_modules/
+.npm
+npm-debug.log*
+
+# OS / Editor
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/

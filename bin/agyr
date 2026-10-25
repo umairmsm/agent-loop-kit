@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# agyr: short alias for agy-sessions (list/resume/archive/restore/stats).
+exec agy-sessions "$@"

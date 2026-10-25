@@ -1,0 +1,11 @@
+# .supervision/gate.conf — project-specific gate commands (sourced by gate.sh).
+BASE_BRANCH="main"                         # branch the builder's work is compared against
+ENV_CMD="python3 --version"                # print runtime version (optional)
+TEST_CMD="pytest -q"                       # e.g. "npm test --silent", "go test ./...", "cargo test"
+LINT_CMD=""                                # e.g. "ruff check .", "npm run lint", "golangci-lint run"
+FORMAT_CMD=""                              # e.g. "ruff format --check .", "prettier --check ."
+TEST_PATHS="tests"                         # where tests live (for removed/skipped detection)
+PROTECTED_PATHS='^(\.github/|migrations/|infra/)'   # regex: changes here need owner sign-off
+# Probes: commands that prove the specific bug is fixed (not just that tests pass).
+# Each should print one line, e.g. "PROBE_X ok=True". Keep probe scripts in .supervision/bin/.
+PROBES=()

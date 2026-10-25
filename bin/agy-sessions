@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+"""
+agy-sessions — keep Antigravity's /resume list short, and find the session you want.
+
+    agy-sessions                         # this project's sessions, newest first (what agyr did)
+    agy-sessions 3                       # resume #3 from that list
+    agy-sessions list [-n 30] [-a] [--all-projects]
+    agy-sessions stats                   # what is piling up, and why
+    agy-sessions archive --loop-done     # loop sessions whose step was approved or superseded
+    agy-sessions archive --children      # sub-agent sessions older than 7 days
+    agy-sessions archive --older 30 --headless      # headless (agy -p) sessions older than 30 days
+    agy-sessions archive --older 60 --interactive   # interactive ones too (always ask first)
+    agy-sessions archive --ids <id> ...
+    agy-sessions restore <id> | --all
+    agy-sessions import-ledger <repo>    # backfill the ledger from <repo>/.supervision/loop/*.agy.json
+
+Every archive is a DRY RUN unless you add --yes.
+
+Why archiving a row is not enough: agy rebuilds conversation_summaries.db from the files in
+conversations/ on start. The 2026-09-28 cleanup moved rows to conversation_summaries_archived.db and
+all 206 came back. This tool moves the session's FILES (conversations/<id>.*, brain/<id>/,
+annotations/<id>.*, presence/<id>.*) to ~/.gemini/antigravity-cli-archive/<id>/ and drops the row.
+restore moves them back, and agy re-adds the row itself.
+
+Writes only while no agy process is running, and backs up the summaries database first.
+The ledger (~/.local/state/agy-loop/sessions.jsonl) is written by agy-loop: one line per session it
+started, so loop sessions show as "<repo> <task> step N attempt M VERDICT" instead of agy's guess.
+"""
+import argparse
+import glob
+import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
+
+HOME = os.path.expanduser('~')
+AGY = os.path.join(HOME, '.gemini/antigravity-cli')
+DB = os.path.join(AGY, 'conversation_summaries.db')
+ARCHIVE = os.path.join(HOME, '.gemini/antigravity-cli-archive')
+LEDGER = os.path.join(HOME, '.local/state/agy-loop/sessions.jsonl')
+PER_SESSION = ('conversations', 'brain', 'annotations', 'presence')
+COLS = ('conversation_id, title, preview, step_count, last_modified_time, workspace_uris, '
+        'nesting_depth, status, last_user_input_step_index, parent_conversation_id')
+
+
+# ---- reading --------------------------------------------------------------------------------
+def rows():
+    if not os.path.exists(DB):
+        sys.exit(f'agy-sessions: no session database at {DB}')
+    con = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
+    out = []
+    for r in con.execute(f'SELECT {COLS} FROM conversation_summaries ORDER BY last_modified_time DESC'):
+        d = dict(zip([c.strip() for c in COLS.split(',')], r))
+        d['folders'] = folders(d['workspace_uris'])
+        d['headless'] = d['last_user_input_step_index'] == -1
+        d['mtime'] = parse_time(d['last_modified_time'])
+        out.append(d)
+    return out
+
+
+def folders(uris):
+    try:
+        return [u[7:] if u.startswith('file://') else u for u in json.loads(uris or '[]')]
+    except json.JSONDecodeError:
+        return []
+
+
+def parse_time(ts):
+    try:
+        return datetime.fromisoformat(ts.split('.')[0].replace(' ', 'T')).replace(tzinfo=timezone.utc)
+    except (ValueError, AttributeError):
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def age(t):
+    s = (datetime.now(timezone.utc) - t).total_seconds()
+    for unit, n in (('d', 86400), ('h', 3600), ('m', 60)):
+        if s >= n:
+            return f'{int(s // n)}{unit} ago'
+    return 'just now'
+
+
+def ledger():
+    """conversation_id -> latest ledger entry."""
+    out = {}
+    try:
+        with open(LEDGER) as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                    out[e['id']] = {**out.get(e['id'], {}), **e}
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def label(d, led):
+    e = led.get(d['conversation_id'])
+    if e:
+        return f"[loop] {e.get('repo', '?')} {os.path.basename(e.get('task', '?'))} step {e.get('step', '?')} " \
+               f"try {e.get('attempt', '?')} {e.get('verdict', '')}".strip()
+    return d['title'] or (d['preview'] or '').strip()[:60] or '(untitled)'
+
+
+def matches(cwd, ws):
+    for w in ws:
+        w = w.rstrip('/')
+        if cwd == w or cwd.startswith(w + '/') or w.startswith(cwd + '/'):
+            if cwd.startswith(w + '/') and w in (HOME, '/', ''):
+                continue    # a session started in ~ or / would otherwise match every project
+            return True
+    return False
+
+
+def agy_running():
+    return subprocess.run(['pgrep', '-x', 'agy'], capture_output=True).returncode == 0
+
+
+# ---- commands -------------------------------------------------------------------------------
+def cmd_list(a):
+    cwd = os.path.realpath(os.getcwd())
+    led = ledger()
+    shown = [d for d in rows()
+             if (a.all_projects or matches(cwd, d['folders'])) and (a.with_children or d['nesting_depth'] == 0)]
+    if not shown:
+        print(f'no sessions for {cwd} (try --all-projects)')
+        return 0
+    print(f"{len(shown)} session(s) for {'all projects' if a.all_projects else cwd}:")
+    page = shown[:a.n]
+    for i, d in enumerate(page, 1):
+        live = '  RUNNING' if d['status'].endswith('RUNNING') else ''
+        print(f"  {i:>2}. {label(d, led)[:66]:<66}  {age(d['mtime']):>8}  {d['step_count']:>5} steps{live}")
+    if a.pick is None and not a.list:
+        try:
+            raw = input('resume which? (number, Enter to quit) ').strip()
+        except EOFError:
+            return 0
+        if not raw:
+            return 0
+        a.pick = int(raw)
+    if a.pick is not None:
+        if not 1 <= a.pick <= len(page):
+            sys.exit(f'agy-sessions: pick 1..{len(page)}')
+        binary = shutil.which('agy-safe') or shutil.which('agy')
+        os.execvp(binary, [binary, '--conversation', page[a.pick - 1]['conversation_id']])
+    return 0
+
+
+def cmd_stats(_a):
+    rs, led = rows(), ledger()
+    now = datetime.now(timezone.utc)
+    top = [d for d in rs if d['nesting_depth'] == 0]
+    print(f"{len(rs)} sessions in /resume")
+    print(f"  sub-agent children:            {len(rs) - len(top)}")
+    print(f"  headless top-level (agy -p):   {sum(d['headless'] for d in top)}")
+    print(f"  interactive top-level:         {sum(not d['headless'] for d in top)}")
+    print(f"  known loop sessions (ledger):  {sum(d['conversation_id'] in led for d in rs)}")
+    for days in (7, 30, 60):
+        print(f"  older than {days:>2} days:            {sum(now - d['mtime'] > timedelta(days=days) for d in rs)}")
+    def size(path):
+        return sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(path) for f in fs
+                   if not os.path.islink(os.path.join(r, f)))
+    print(f"  disk: conversations {size(AGY + '/conversations') / 1e9:.1f} GB, "
+          f"brain {size(AGY + '/brain') / 1e9:.1f} GB")
+    if os.path.isdir(ARCHIVE):
+        print(f"  archived by this tool:         {len(os.listdir(ARCHIVE))}")
+    return 0
+
+
+def select(a):
+    rs, led = rows(), ledger()
+    now = datetime.now(timezone.utc)
+    by_id = {d['conversation_id']: d for d in rs}
+    pick = {}
+    if a.ids:
+        for i in a.ids:
+            if i in by_id:
+                pick[i] = 'listed'
+            else:
+                print(f'  skip {i}: not in /resume')
+    if a.loop_done:
+        # every ledger session except the newest one of a step that is not yet approved
+        # (that one may be resumed to debug a stop)
+        latest = {}
+        for i, e in led.items():
+            k = (e.get('repo'), e.get('task'), e.get('step'))
+            if k not in latest or e.get('time', '') > led[latest[k]].get('time', ''):
+                latest[k] = i
+        for i, e in led.items():
+            k = (e.get('repo'), e.get('task'), e.get('step'))
+            keep = latest[k] == i and e.get('verdict') != 'APPROVED'
+            if i in by_id and not keep:
+                pick[i] = f"loop {e.get('verdict') or 'superseded'}"
+    if a.children:
+        for d in rs:
+            if d['nesting_depth'] > 0 and now - d['mtime'] > timedelta(days=7):
+                pick[d['conversation_id']] = 'sub-agent, older than 7d'
+    if a.older is not None:
+        if not (a.headless or a.interactive):
+            sys.exit('agy-sessions: --older needs --headless and/or --interactive')
+        for d in rs:
+            if d['nesting_depth'] == 0 and now - d['mtime'] > timedelta(days=a.older) \
+                    and ((a.headless and d['headless']) or (a.interactive and not d['headless'])) \
+                    and not d['status'].endswith('RUNNING'):
+                pick[d['conversation_id']] = f"{'headless' if d['headless'] else 'interactive'}, older than {a.older}d"
+    # never archive a running session or the parent of a session we keep
+    for i in list(pick):
+        if by_id[i]['status'].endswith('RUNNING'):
+            del pick[i]
+    return [(by_id[i], why) for i, why in pick.items()], led
+
+
+def backup_db():
+    os.makedirs(os.path.join(AGY, 'backups'), exist_ok=True)
+    dst = os.path.join(AGY, 'backups', f"conversation_summaries_{datetime.now():%Y%m%d_%H%M%S}.db.bak")
+    src = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
+    out = sqlite3.connect(dst)
+    src.backup(out)
+    out.close()
+    src.close()
+    return dst
+
+
+def move_files(cid, src_root, dst_root):
+    moved = 0
+    for sub in PER_SESSION:
+        for p in glob.glob(os.path.join(src_root, sub, cid + '*')):
+            os.makedirs(os.path.join(dst_root, sub), exist_ok=True)
+            shutil.move(p, os.path.join(dst_root, sub, os.path.basename(p)))
+            moved += 1
+    return moved
+
+
+def cmd_archive(a):
+    picked, led = select(a)
+    if not picked:
+        print('nothing to archive')
+        return 0
+    for d, why in picked:
+        print(f"  {d['conversation_id'][:8]}  {age(d['mtime']):>8}  {label(d, led)[:60]:<60}  ({why})")
+    print(f'{len(picked)} session(s)')
+    if not a.yes:
+        print('dry run: add --yes to archive them')
+        return 0
+    if agy_running():
+        sys.exit('agy-sessions: agy is running. Close every agy session (and stop agy-loop) first; '
+                 'agy holds the session database.')
+    bak = backup_db()
+    con = sqlite3.connect(DB)
+    n = 0
+    for d, why in picked:
+        cid = d['conversation_id']
+        dst = os.path.join(ARCHIVE, cid)
+        os.makedirs(dst, exist_ok=True)
+        with open(os.path.join(dst, 'summary.json'), 'w') as f:
+            json.dump({k: v for k, v in d.items() if k not in ('mtime',)} |
+                      {'archived_at': datetime.now(timezone.utc).isoformat(), 'reason': why,
+                       'ledger': led.get(cid)}, f, indent=1, default=str)
+        move_files(cid, AGY, dst)
+        con.execute('DELETE FROM conversation_summaries WHERE conversation_id = ?', (cid,))
+        n += 1
+    con.commit()
+    con.close()
+    print(f'archived {n} into {ARCHIVE} (database backup: {bak})')
+    return 0
+
+
+def cmd_restore(a):
+    ids = sorted(os.listdir(ARCHIVE)) if a.all else a.ids
+    if not ids:
+        sys.exit('agy-sessions: restore <id>... | --all')
+    if agy_running():
+        sys.exit('agy-sessions: agy is running. Close it first.')
+    for cid in ids:
+        src = os.path.join(ARCHIVE, cid)
+        if not os.path.isdir(src):
+            print(f'  skip {cid}: not archived')
+            continue
+        n = move_files(cid, src, AGY)
+        os.remove(os.path.join(src, 'summary.json')) if os.path.exists(os.path.join(src, 'summary.json')) else None
+        shutil.rmtree(src, ignore_errors=True)
+        print(f'  restored {cid} ({n} files); agy re-lists it on next start')
+    return 0
+
+
+def cmd_import_ledger(a):
+    repo = os.path.realpath(a.repo)
+    files = sorted(glob.glob(os.path.join(repo, '.supervision/loop/step-*.agy.json')))
+    known = ledger()
+    os.makedirs(os.path.dirname(LEDGER), exist_ok=True)
+    added = 0
+    with open(LEDGER, 'a') as out:
+        for p in files:
+            try:
+                d = json.load(open(p))
+            except (json.JSONDecodeError, OSError):
+                continue
+            cid = d.get('conversation_id')
+            if not cid or cid in known:
+                continue
+            step, attempt = os.path.basename(p)[5:-9].split('-')[:2]
+            rv = p.replace('.agy.json', '.review.json')
+            verdict = ''
+            # a review file older than the build belongs to an earlier task that reused the step number
+            if os.path.exists(rv) and os.path.getmtime(rv) >= os.path.getmtime(p):
+                try:
+                    verdict = json.load(open(rv)).get('verdict', '')
+                except (json.JSONDecodeError, OSError):
+                    pass
+            out.write(json.dumps({'id': cid, 'repo': os.path.basename(repo), 'task': '(imported)',
+                                  'step': int(step), 'attempt': int(attempt), 'verdict': verdict,
+                                  'time': datetime.fromtimestamp(os.path.getmtime(p), timezone.utc).isoformat()}) + '\n')
+            added += 1
+    print(f'added {added} loop session(s) from {repo} to {LEDGER}')
+    return 0
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0].isdigit() or argv[0].startswith('-'):
+        argv = ['list'] + argv
+    ap = argparse.ArgumentParser(prog='agy-sessions', description=__doc__.split('\n\n')[0])
+    sp = ap.add_subparsers(dest='cmd', required=True)
+    p = sp.add_parser('list')
+    p.add_argument('pick', nargs='?', type=int)
+    p.add_argument('-n', type=int, default=15)
+    p.add_argument('-a', '--with-children', action='store_true')
+    p.add_argument('--all-projects', action='store_true')
+    p.add_argument('-l', '--list', action='store_true')
+    p.set_defaults(fn=cmd_list)
+    sp.add_parser('stats').set_defaults(fn=cmd_stats)
+    p = sp.add_parser('archive')
+    p.add_argument('--ids', nargs='+')
+    p.add_argument('--loop-done', action='store_true')
+    p.add_argument('--children', action='store_true')
+    p.add_argument('--older', type=int, metavar='DAYS')
+    p.add_argument('--headless', action='store_true')
+    p.add_argument('--interactive', action='store_true')
+    p.add_argument('--yes', action='store_true')
+    p.set_defaults(fn=cmd_archive)
+    p = sp.add_parser('restore')
+    p.add_argument('ids', nargs='*')
+    p.add_argument('--all', action='store_true')
+    p.set_defaults(fn=cmd_restore)
+    p = sp.add_parser('import-ledger')
+    p.add_argument('repo')
+    p.set_defaults(fn=cmd_import_ledger)
+    a = ap.parse_args(argv)
+    return a.fn(a)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

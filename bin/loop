@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# loop: short alias for agy-loop (unattended multi-agent build runner)
+exec "$(dirname "$0")/agy-loop" "$@"

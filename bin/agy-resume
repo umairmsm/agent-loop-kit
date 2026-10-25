@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# agy-resume: drop-in for agy-safe in agy-loop. If a headless builder
+# run ends with an API error (status ERROR: expired sign-in 401, stream idle timeout, ...)
+# or hits print-timeout (status SUCCESS but no structured_output: "returning partial output"),
+# resume the SAME conversation in a fresh process (which loads a fresh token) instead of
+# failing the attempt. The builder keeps its context and its working-tree changes.
+#
+# Enabled per repo with BUILDER_BIN="agy-resume" in loop.conf.
+# Exits with the last run's exit code; prints the last run's JSON on stdout.
+set -uo pipefail
+
+REAL="${AGY_RESUME_REAL:-$(command -v agy-safe || command -v agy || true)}"
+MAX_RESUMES="${AGY_MAX_RESUMES:-4}"
+OUT="$(mktemp)"; trap 'rm -f "$OUT"' EXIT
+
+if [ -z "$REAL" ]; then
+  echo "agy-resume error: neither agy-safe nor agy found in PATH" >&2
+  exit 127
+fi
+
+"$REAL" "$@" > "$OUT"; rc=$?
+
+# rebuild the args with the prompt replaced, for resumes
+args=("$@"); prompt_i=-1
+for i in "${!args[@]}"; do
+  case "${args[$i]}" in -p|--print|--prompt) prompt_i=$((i+1)) ;; esac
+done
+
+field() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get(sys.argv[2]) or '')" "$OUT" "$1" 2>/dev/null; }
+# cut off = API error, or a timeout that returned no structured answer (only when a schema was asked for)
+want_schema=0; for a in "$@"; do [ "$a" = "--json-schema" ] && want_schema=1; done
+cut_off() {
+  [ "$(field status)" = "ERROR" ] && return 0
+  [ "$want_schema" = 1 ] && [ -n "$(field conversation_id)" ] && [ -z "$(field structured_output)" ] && return 0
+  return 1
+}
+
+n=0
+while [ "$n" -lt "$MAX_RESUMES" ] && [ "$prompt_i" -ge 0 ] && cut_off; do
+  cid="$(field conversation_id)"; [ -n "$cid" ] || break
+  n=$((n+1)); err="$(field error | cut -c1-120)"
+  echo "$(date '+%F %T') agy-resume: cut off (${err:-time limit or no structured answer}); resuming conversation $cid ($n/$MAX_RESUMES)" >&2
+  sleep 5
+  rargs=("${args[@]}")
+  rargs[prompt_i]="Your previous turn was cut off by an API error, a sign-in error or the time limit, not by anything you did. Continue the SAME step from where you stopped: the working tree still has your changes. Do not start over or redo finished work. Finish the step, run every check it lists in the foreground, commit once, leave the tree clean, then answer in the JSON schema."
+  "$REAL" "${rargs[@]}" --conversation "$cid" > "$OUT"; rc=$?
+done
+
+cat "$OUT"
+exit "$rc"

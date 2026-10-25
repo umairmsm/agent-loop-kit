@@ -1,0 +1,17 @@
+{
+  "name": "agent-loop-kit",
+  "version": "0.1.0",
+  "description": "Autonomous multi-agent supervision loop: builder agents code step-by-step; Claude Code independently gates and reviews each commit.",
+  "author": "umairmsm",
+  "license": "MIT",
+  "repository": "https://github.com/umairmsm/agent-loop-kit",
+  "skills": [
+    "skills/agent-supervisor",
+    "skills/supervised-build"
+  ],
+  "agents": [
+    "agents/gate-runner.md",
+    "agents/step-reviewer.md",
+    "agents/security-reviewer.md"
+  ]
+}

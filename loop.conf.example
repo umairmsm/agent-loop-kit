@@ -1,0 +1,40 @@
+# loop.conf.example - Configuration template for agent-loop-kit
+# Copy this file to .supervision/loop.conf in your project repository.
+
+# The command used to invoke the builder agent.
+# Defaults to agy-safe or agy; can also be agy-resume, aider, or custom wrapper.
+BUILDER_BIN="agy-safe"
+
+# Multi-Brain Supervisor Cascade (order of failover when quota is exhausted or rate-limited).
+# Supported provider prefixes:
+#   - "claude"                  (Claude Code CLI: sonnet/opus)
+#   - "agy:<model>"             (Antigravity headless: gemini-3.8-flash-high, claude-sonnet-4-6, gpt-oss-120b-medium)
+#   - "ollama:<model>"          (Local Ollama: deepseek-r1, qwen2.5-7b, llama3.2:3b - 100% offline & infinite quota)
+SUPERVISOR_CASCADE="claude agy:gemini-3.8-flash-high agy:gpt-oss-120b-medium ollama:deepseek-r1"
+
+# Ollama server endpoint for local models
+OLLAMA_HOST="http://localhost:11434"
+
+# Reviewer models and agent mappings for Claude Code
+STEP_AGENT="step-reviewer"
+STEP_MODEL="sonnet"
+SECURITY_AGENT="security-reviewer"
+SECURITY_MODEL="opus"
+
+# Preflight command executed before every gate run.
+# Must exit 0 for the gate to proceed (e.g. "docker info", "pg_isready", etc.)
+PREFLIGHT=""
+
+# Extra tool permissions granted to the reviewer session.
+# Example: ",Bash(pytest:*),Bash(npm test:*)"
+REVIEW_TOOLS_EXTRA=""
+
+# Optional extra prompt text appended to the builder's prompt for every step.
+BUILD_EXTRA=""
+
+# Maximum execution time (in seconds) for gate commands in gate.sh.
+GATE_TIMEOUT=900
+
+# Optional ntfy.sh topic for push notifications on loop events (STOP, BLOCKED, DONE)
+# Set to your secret topic name (e.g. "my-secret-loop-topic") or leave empty to disable.
+NTFY_TOPIC=""

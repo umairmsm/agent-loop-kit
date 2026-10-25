@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+#
+# agy-safe — launch autonomous builder CLI with OS-level guards, so its allowlist can
+# cover everyday dev commands without per-command "yes" prompts.
+#
+#   agy-safe [any builder args]        # instead of `agy`
+#   AGY_ALLOW_SSH=1 agy-safe ...       # infra work that genuinely needs ssh/rsync
+#   AGY_ALLOW_PUSH=1 agy-safe ...      # a project whose workflow pushes (e.g. a staging branch)
+#
+# Why: Builder agents ask before every command not on their allowlist, at random
+# moments. A broad allowlist alone would also allow `git push`, `rm -rf ~` or
+# `curl -d @.env`. These shims sit first on PATH, so the dangerous variants
+# fail (exit 97) no matter what the agent was allowed to run.
+#
+# What is blocked:
+#   ssh scp sftp rsync (unless AGY_ALLOW_SSH=1), sudo, su, shred, mkfs, dd
+#   git: push, reset --hard, clean, branch -D/-d, filter-branch, update-ref -d,
+#        reflog expire, gc --prune
+#   make: any *publish* target
+#   rm: any path outside $AGY_SAFE_ROOT (default $PWD) or /tmp
+#   curl/wget: uploads and non-GET methods (-d --data -F -T --upload-file -X POST/PUT/DELETE/PATCH)
+#   systemctl/crontab: anything except read-only queries
+set -euo pipefail
+
+REAL_AGY="${AGY_REAL:-$(command -v agy 2>/dev/null || echo "$HOME/.local/bin/agy")}"
+ROOT="${AGY_SAFE_ROOT:-${WORKSPACE_ROOT:-$(pwd)}}"
+GUARD="${AGY_GUARD_DIR:-$HOME/.local/share/agy-guard/bin}"
+mkdir -p "$GUARD"
+
+resolve() { PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$GUARD" | paste -sd:)" command -v "$1" || true; }
+# shellcheck disable=SC2016
+deny='echo "BLOCKED by agy-safe: $BLOCK_WHAT. Ask the human or the supervisor; do not work around this." >&2; exit 97'
+
+write() { # name body
+  printf '#!/usr/bin/env bash\n%s\n' "$2" > "$GUARD/$1"
+  chmod +x "$GUARD/$1"
+}
+
+for c in sudo su shred mkfs dd; do
+  write "$c" "BLOCK_WHAT='$c is disabled for agents'; $deny"
+done
+
+for c in ssh scp sftp rsync; do
+  real=$(resolve "$c")
+  write "$c" "[ \"\${AGY_ALLOW_SSH:-0}\" = 1 ] && exec $real \"\$@\"
+BLOCK_WHAT='$c (remote/production access) is disabled; relaunch with AGY_ALLOW_SSH=1 only for approved infra work'; $deny"
+done
+
+write git "real=$(resolve git)
+case \" \$* \" in
+  *' push '*|*' push') [ \"\${AGY_ALLOW_PUSH:-0}\" = 1 ] && exec \"\$real\" \"\$@\"; BLOCK_WHAT='git push is disabled; relaunch with AGY_ALLOW_PUSH=1 for a project that pushes'; $deny ;;
+  *' clean '*|*' filter-branch '*|*' gc --prune'*|*' reflog expire'*) BLOCK_WHAT=\"git \$1 is disabled\"; $deny ;;
+esac
+[ \"\${1:-}\" = reset ] && case \" \$* \" in *' --hard'*) BLOCK_WHAT='git reset --hard is disabled'; $deny ;; esac
+[ \"\${1:-}\" = branch ] && case \" \$* \" in *' -D'*|*' -d '*|*' --delete'*) BLOCK_WHAT='deleting branches is disabled'; $deny ;; esac
+[ \"\${1:-}\" = update-ref ] && case \" \$* \" in *' -d'*) BLOCK_WHAT='git update-ref -d is disabled'; $deny ;; esac
+exec \"\$real\" \"\$@\""
+
+write make "real=$(resolve make)
+case \" \$* \" in *publish*) BLOCK_WHAT='make publish targets are disabled'; $deny ;; esac
+exec \"\$real\" \"\$@\""
+
+write rm "real=$(resolve rm)
+for a in \"\$@\"; do
+  case \"\$a\" in -*) continue ;; esac
+  p=\$(realpath -m -- \"\$a\")
+  case \"\$p\" in $ROOT/*|/tmp/*) ;; *) BLOCK_WHAT=\"rm outside $ROOT or /tmp (\$p)\"; $deny ;; esac
+  case \"\$p\" in $ROOT|$ROOT/) BLOCK_WHAT='rm of the workspace root'; $deny ;; esac
+done
+exec \"\$real\" \"\$@\""
+
+for c in curl wget; do
+  real=$(resolve "$c")
+  write "$c" "for a in \"\$@\"; do case \"\$a\" in
+  -d|--data*|-F|--form*|-T|--upload-file*|--post-data*|--post-file*|--body-data*|--body-file*) BLOCK_WHAT='$c uploads are disabled'; $deny ;;
+esac; done
+case \" \$* \" in *' -X POST'*|*' -X PUT'*|*' -X DELETE'*|*' -X PATCH'*|*' --request POST'*|*' --request PUT'*|*' --request DELETE'*|*' --method='*) BLOCK_WHAT='$c non-GET requests are disabled'; $deny ;; esac
+exec $real \"\$@\""
+done
+
+write systemctl "real=$(resolve systemctl)
+case \" \$* \" in *' status'*|*' show'*|*' cat '*|*' list-'*|*' is-active'*|*' is-enabled'*|*' is-failed'*) exec \"\$real\" \"\$@\" ;; esac
+BLOCK_WHAT='systemctl changes are disabled (read-only queries only)'; $deny"
+
+write crontab "real=$(resolve crontab)
+[ \"\${1:-}\" = -l ] && exec \"\$real\" -l
+BLOCK_WHAT='crontab changes are disabled'; $deny"
+
+export AGY_GUARD_ACTIVE=1
+export PATH="$GUARD:$PATH"
+exec "$REAL_AGY" "$@"
