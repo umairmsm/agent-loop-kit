@@ -123,6 +123,44 @@ MODEL_SPECS = {
 }
 
 
+SHORTCUT_MAP = {
+    "1": "claude",
+    "claude": "claude",
+    "sonnet": "claude",
+    "opus": "claude",
+
+    "2": "openrouter:qwen/qwen3-coder:free",
+    "qwen": "openrouter:qwen/qwen3-coder:free",
+    "qwen3": "openrouter:qwen/qwen3-coder:free",
+    "qwen-coder": "openrouter:qwen/qwen3-coder:free",
+
+    "3": "openrouter:deepseek/deepseek-v4.1-flash",
+    "deepseek": "openrouter:deepseek/deepseek-v4.1-flash",
+    "ds": "openrouter:deepseek/deepseek-v4.1-flash",
+
+    "4": "agy:gemini-3.8-flash-high",
+    "gemini": "agy:gemini-3.8-flash-high",
+    "flash": "agy:gemini-3.8-flash-high",
+
+    "5": "ollama:deepseek-r1:latest",
+    "r1": "ollama:deepseek-r1:latest",
+    "local": "ollama:deepseek-r1:latest",
+    "ollama": "ollama:deepseek-r1:latest",
+
+    "6": "openrouter:openai/gpt-oss-120b:free",
+    "gpt": "openrouter:openai/gpt-oss-120b:free",
+    "oss": "openrouter:openai/gpt-oss-120b:free",
+    "120b": "openrouter:openai/gpt-oss-120b:free",
+
+    "7": "ollama:llama3.2:3b",
+    "llama": "ollama:llama3.2:3b",
+    "llama3": "ollama:llama3.2:3b",
+
+    "8": "ollama:qwen2.5-7b:latest",
+    "qwen-local": "ollama:qwen2.5-7b:latest"
+}
+
+
 def load_user_config():
     if os.path.exists(USER_CONFIG_FILE):
         try:
@@ -167,37 +205,40 @@ def print_telemetry_hud(model_id, prompt_text=""):
         print(f"│ Payload Size:   {load_str[:48]:<48} │", file=sys.stderr)
         left_str = f"~{tokens_left:,} tokens ({pct_left:.1f}% headroom left)"
         print(f"│ Available Left: {left_str[:48]:<48} │", file=sys.stderr)
-    print(f"│ Switch Anytime: supervisor-router --switch                         │", file=sys.stderr)
+    print("├" + "─" * 68 + "┤", file=sys.stderr)
+    print(f"│ ⚡ 1-KEY SHORTCUTS (use 's <num>' or 'model <num>'):               │", file=sys.stderr)
+    print(f"│   s 1 (Claude)         s 2 (Qwen 480B)       s 3 (DeepSeek)        │", file=sys.stderr)
+    print(f"│   s 4 (Gemini)         s 5 (Local R1)        s 6 (GPT-OSS 120B)    │", file=sys.stderr)
     print("└" + "─" * 68 + "┘", file=sys.stderr)
 
 
 def switch_model_interactive(target_model=None):
     cfg = load_user_config()
     if target_model:
-        if target_model in MODEL_SPECS or target_model in DEFAULT_CASCADE:
-            cfg["preferred_model"] = target_model
-            save_user_config(cfg)
-            print(f"\n✅ Active Supervisor switched to: {target_model}")
-            print_telemetry_hud(target_model)
-            return
-        else:
-            cfg["preferred_model"] = target_model
-            save_user_config(cfg)
-            print(f"\n✅ Active Supervisor switched to custom: {target_model}")
-            return
+        target_model = target_model.strip()
+        resolved = SHORTCUT_MAP.get(target_model.lower(), target_model)
+        cfg["preferred_model"] = resolved
+        save_user_config(cfg)
+        disp = MODEL_SPECS.get(resolved, {}).get("display", resolved)
+        print(f"\n✅ Active Supervisor switched to: {disp} ({resolved})")
+        print_telemetry_hud(resolved)
+        return
 
     current = cfg.get("preferred_model", DEFAULT_CASCADE[0])
     print("==================================================")
     print("       Supervisor Model Switcher & Selector       ")
     print("==================================================")
     print(f"Current Preferred Model: {current}\n")
-    print("Choose a model to set as your primary supervisor:")
-    for idx, (m_id, spec) in enumerate(MODEL_SPECS.items(), start=1):
+    print("Choose a model number to set as your primary supervisor:")
+    shortcuts_order = ["1", "2", "3", "4", "5", "6", "7", "8"]
+    for s_key in shortcuts_order:
+        m_id = SHORTCUT_MAP[s_key]
+        spec = MODEL_SPECS.get(m_id, {})
         mark = "👉 (CURRENT)" if m_id == current else "  "
-        print(f"  [{idx:2}] {mark} {spec['display']:<28} | {spec['context_window']:,} ctx | {spec['type']}")
+        print(f"  [{s_key}] {mark} {spec.get('display', m_id):<26} | {spec.get('context_window', 0):,} ctx | {spec.get('type', '')}")
     print("==================================================")
     try:
-        choice = input("Enter number to select (or press Enter to keep current): ").strip()
+        choice = input("Enter number to select (e.g. 1, 2, 5) or press Enter to keep: ").strip()
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return
@@ -206,19 +247,15 @@ def switch_model_interactive(target_model=None):
         print("Kept current model.")
         return
 
-    try:
-        num = int(choice)
-        keys = list(MODEL_SPECS.keys())
-        if 1 <= num <= len(keys):
-            selected = keys[num - 1]
-            cfg["preferred_model"] = selected
-            save_user_config(cfg)
-            print(f"\n✅ Active Supervisor switched to: {selected}")
-            print_telemetry_hud(selected)
-        else:
-            print("Invalid selection number.")
-    except ValueError:
-        print("Please enter a valid number.")
+    choice_resolved = SHORTCUT_MAP.get(choice.lower())
+    if choice_resolved:
+        cfg["preferred_model"] = choice_resolved
+        save_user_config(cfg)
+        disp = MODEL_SPECS.get(choice_resolved, {}).get("display", choice_resolved)
+        print(f"\n✅ Active Supervisor switched to: {disp} ({choice_resolved})")
+        print_telemetry_hud(choice_resolved)
+    else:
+        print(f"Unknown shortcut '{choice}'. Type 'brain' to see options.")
 
 
 def ensure_cache():
@@ -775,16 +812,28 @@ Analyze the git diff, test preservation, and gate evidence. Then produce your JS
 
 def show_status():
     ensure_cache()
+    load_repo_config()
     cooldowns = load_cooldowns()
     now = int(time.time())
+    cred_file = os.path.expanduser("~/.config/agent-loop/credentials.env")
     print("==================================================")
     print("Supervisor Router: Multi-Brain Provider Status")
+    print(f"Credentials File: {cred_file}")
     print("==================================================")
     for p in DEFAULT_CASCADE:
         entry = cooldowns.get(p)
         if entry and now < entry.get("cooldown_until", 0):
             rem = int((entry["cooldown_until"] - now) / 60)
             print(f"  [COOLDOWN] {p:38} Cooldown active ({rem}m remaining; {entry.get('reason','')})")
+        elif p.startswith("openrouter:") or p.startswith("deepseek:") or p.startswith("cloudflare:"):
+            prov = p.split(":")[0]
+            env_var = f"{prov.upper()}_API_KEY"
+            key_val = os.environ.get(env_var, "")
+            if key_val:
+                masked = f"Key: sk-****...{key_val[-4:]}" if len(key_val) > 8 else "Key: OK"
+                print(f"  [READY]    {p:38} {masked}")
+            else:
+                print(f"  [NEED KEY] {p:38} Missing {env_var} (will prompt on the fly)")
         else:
             print(f"  [READY]    {p:38} Ready for review")
     print("==================================================")
