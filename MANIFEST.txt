@@ -33,6 +33,9 @@ skills/agent-supervisor/references/lessons.md
 # Builder Skill: supervised-build
 skills/supervised-build/SKILL.md
 
+# Brain Controller Skill
+skills/brain/SKILL.md
+
 # Claude Code Reviewer Subagents (agents/)
 agents/gate-runner.md
 agents/step-reviewer.md

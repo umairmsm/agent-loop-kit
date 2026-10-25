@@ -31,6 +31,9 @@ for a in gate-runner step-reviewer security-reviewer; do
 done
 
 link "skills/agent-supervisor" "$CLAUDE_DIR/skills/agent-supervisor"
+if [ -d "$KIT_DIR/skills/brain" ]; then
+  link "skills/brain" "$CLAUDE_DIR/skills/brain"
+fi
 if [ -d "$KIT_DIR/skills/supervised-build" ]; then
   link "skills/supervised-build" "$CLAUDE_DIR/skills/supervised-build"
 fi
