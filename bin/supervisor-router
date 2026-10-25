@@ -97,7 +97,24 @@ def is_on_cooldown(provider_id):
 
 
 def load_repo_config():
-    """Load settings from .supervision/loop.conf if present in the current repository."""
+    """Load settings from ~/.config/agent-loop/credentials.env and .supervision/loop.conf."""
+    # 1. Load user-global secure credentials (~/.config/agent-loop/credentials.env)
+    user_cred = os.path.expanduser("~/.config/agent-loop/credentials.env")
+    if os.path.exists(user_cred):
+        try:
+            with open(user_cred, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip('"').strip("'")
+                        if k and not os.environ.get(k):
+                            os.environ[k] = v
+        except Exception:
+            pass
+
+    # 2. Load repo-local settings (.supervision/loop.conf)
     try:
         root = subprocess.check_output(
             ["git", "rev-parse", "--show-toplevel"],
