@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/umairmsm/agent-loop-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/umairmsm/agent-loop-kit/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Good First Issues](https://img.shields.io/badge/Contribute-25%20Good%20First%20Issues-brightgreen.svg)](docs/CONTRIBUTING_TASKS.md)
+[![Good First Issues](https://img.shields.io/github/issues/umairmsm/agent-loop-kit/good%20first%20issue?color=brightgreen&label=Good%20First%20Issues)](https://github.com/umairmsm/agent-loop-kit/issues)
 
 ---
 
