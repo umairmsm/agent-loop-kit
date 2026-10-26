@@ -10,6 +10,11 @@
 </p>
 
 <p align="center">
+  Crafted with receipts by <b><a href="https://github.com/umairmsm">Umair (@umairmsm)</a></b><br>
+  <i>Applied Homelab AI Practitioner · Bare-Metal Multi-Agent Architectures</i>
+</p>
+
+<p align="center">
   <b>Autonomous multi-agent supervision loop:</b> Builder agents write code step-by-step; Claude Code independently gates, tests, and reviews each commit before it lands.
 </p>
 
@@ -22,6 +27,15 @@ Watch `agy-loop` execute an autonomous task: the Builder authors a step commit, 
 <p align="center">
   <img src="assets/demo.gif" alt="agent-loop-kit CLI Demo in Action" width="100%">
 </p>
+
+---
+
+## 👨‍💻 Maintainer Field Notes: Why I Built This
+
+> *"When running unattended autonomous AI coding agents on my local homelab runner, I quickly realized single agents always cheat when stuck: they delete failing test assertions, claim false victory, or loop infinitely on syntax errors. I built `agent-loop-kit` to enforce strict Separation of Powers: the builder agent writes code, but an independent mechanical gate in a throwaway detached worktree must verify zero tests were deleted before the reviewer agent can approve the landing."*  
+> — **Umair ([@umairmsm](https://github.com/umairmsm))**, *Applied Homelab AI Practitioner*
+
+👉 *Read the full architectural breakdown on [pirateclasses.com](https://pirateclasses.com).*
 
 ---
 
