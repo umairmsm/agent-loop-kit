@@ -1,0 +1,192 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 460" width="100%" height="100%" style="background:#0B0E16; border-radius:12px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0B0E16"/>
+      <stop offset="50%" stop-color="#101524"/>
+      <stop offset="100%" stop-color="#0B0E16"/>
+    </linearGradient>
+    <linearGradient id="builderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="gateGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#064E3B"/>
+      <stop offset="100%" stop-color="#022C22"/>
+    </linearGradient>
+    <linearGradient id="reviewerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#451A03"/>
+      <stop offset="100%" stop-color="#1F0E02"/>
+    </linearGradient>
+
+    <!-- Ambient Animations -->
+    <style>
+      @keyframes pulseBorder {
+        0%, 100% { stroke: #2A3652; }
+        50% { stroke: #06B6D4; }
+      }
+      @keyframes flowDash {
+        to { stroke-dashoffset: -40; }
+      }
+      @keyframes radarSweep {
+        0% { r: 12px; opacity: 0.9; }
+        100% { r: 34px; opacity: 0; }
+      }
+      @keyframes statusGlow {
+        0%, 100% { opacity: 0.8; }
+        50% { opacity: 1; filter: drop-shadow(0 0 6px #10B981); }
+      }
+      .window-border { animation: pulseBorder 6s ease-in-out infinite; }
+      .flow-line { stroke-dasharray: 8 6; animation: flowDash 2s linear infinite; }
+      .radar-wave { animation: radarSweep 2.5s ease-out infinite; }
+      .live-pill { animation: statusGlow 3s ease-in-out infinite; }
+    </style>
+  </defs>
+
+  <!-- Window Container -->
+  <rect x="2" y="2" width="1196" height="456" rx="12" fill="url(#bgGrad)" stroke="#2A3652" stroke-width="2" class="window-border"/>
+
+  <!-- Terminal Window Chrome -->
+  <path d="M 2 14 Q 2 2 14 2 L 1186 2 Q 1198 2 1198 14 L 1198 42 L 2 42 Z" fill="#141A28"/>
+  <line x1="2" y1="42" x2="1198" y2="42" stroke="#2A3652" stroke-width="1.5"/>
+
+  <!-- Window Buttons -->
+  <circle cx="24" cy="22" r="6" fill="#EF4444"/>
+  <circle cx="44" cy="22" r="6" fill="#F59E0B"/>
+  <circle cx="64" cy="22" r="6" fill="#10B981"/>
+
+  <!-- Window Title -->
+  <text x="50%" y="26" text-anchor="middle" fill="#94A3B8" font-size="13" font-weight="600" letter-spacing="0.5">agent-loop-kit : autonomous-separation-of-powers.sh</text>
+
+  <!-- Live Status Badge (Top Right) -->
+  <g class="live-pill" transform="translate(1030, 13)">
+    <rect width="144" height="20" rx="10" fill="#064E3B" stroke="#10B981" stroke-width="1"/>
+    <circle cx="12" cy="10" r="4" fill="#10B981"/>
+    <text x="24" y="14" fill="#A7F3D0" font-size="10.5" font-weight="700" letter-spacing="0.5">GATED WORKTREE</text>
+  </g>
+
+  <!-- ==================== FLOW CONNECTOR LINES ==================== -->
+  <!-- Builder to Gate -->
+  <path d="M 370 230 L 460 230" stroke="#3B82F6" stroke-width="2.5" class="flow-line"/>
+  <polygon points="462,230 452,225 452,235" fill="#3B82F6"/>
+  <rect x="375" y="202" width="80" height="18" rx="4" fill="#0B0E16" stroke="#1E293B" stroke-width="1"/>
+  <text x="415" y="214" text-anchor="middle" fill="#93C5FD" font-size="9.5" font-weight="600">COMMIT STEP</text>
+
+  <!-- Gate to Reviewer -->
+  <path d="M 740 230 L 830 230" stroke="#10B981" stroke-width="2.5" class="flow-line"/>
+  <polygon points="832,230 822,225 822,235" fill="#10B981"/>
+  <rect x="745" y="202" width="80" height="18" rx="4" fill="#0B0E16" stroke="#064E3B" stroke-width="1"/>
+  <text x="785" y="214" text-anchor="middle" fill="#6EE7B7" font-size="9.5" font-weight="700">GATE PASS ✓</text>
+
+  <!-- Reject Loop Back (Bottom Arc) -->
+  <path d="M 970 370 L 970 405 Q 600 440 230 405 L 230 370" fill="none" stroke="#EF4444" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <polygon points="230,366 225,376 235,376" fill="#EF4444"/>
+  <rect x="545" y="405" width="110" height="18" rx="4" fill="#1F0E0E" stroke="#991B1B" stroke-width="1"/>
+  <text x="600" y="417" text-anchor="middle" fill="#FCA5A5" font-size="9.5" font-weight="600">REVISE: FEEDBACK</text>
+
+  <!-- ==================== NODE 1: THE BUILDER AGENT ==================== -->
+  <g transform="translate(80, 80)">
+    <rect width="290" height="290" rx="10" fill="url(#builderGrad)" stroke="#3B82F6" stroke-width="1.8"/>
+    <!-- Header -->
+    <rect width="290" height="42" rx="10" fill="#1E3A8A" opacity="0.4"/>
+    <text x="18" y="26" fill="#60A5FA" font-size="11" font-weight="800" letter-spacing="1">AGENT A • BUILDER</text>
+    <rect x="210" y="12" width="65" height="18" rx="9" fill="#1E293B" stroke="#3B82F6" stroke-width="1"/>
+    <text x="242" y="24" text-anchor="middle" fill="#93C5FD" font-size="9" font-weight="600">BRANCH</text>
+
+    <!-- Main Title -->
+    <text x="18" y="72" fill="#F8FAFC" font-size="20" font-weight="700">The Builder</text>
+    <text x="18" y="94" fill="#94A3B8" font-size="12">Antigravity / Codex / Aider</text>
+
+    <!-- Separation Line -->
+    <line x1="18" y1="110" x2="272" y2="110" stroke="#334155" stroke-width="1"/>
+
+    <!-- Checklist -->
+    <g transform="translate(18, 130)" font-size="12" fill="#CBD5E1">
+      <text y="0" font-weight="600" fill="#60A5FA">●</text>
+      <text x="16" y="0">Focuses purely on writing code</text>
+      
+      <text y="28" font-weight="600" fill="#60A5FA">●</text>
+      <text x="16" y="28">Works step-by-step from spec</text>
+      
+      <text y="56" font-weight="600" fill="#60A5FA">●</text>
+      <text x="16" y="56">Authors code &amp; unit tests</text>
+      
+      <text y="84" font-weight="600" fill="#60A5FA">●</text>
+      <text x="16" y="84">Cannot merge to main directly</text>
+      
+      <text y="112" font-weight="600" fill="#60A5FA">●</text>
+      <text x="16" y="112">Never grades own homework</text>
+    </g>
+  </g>
+
+  <!-- ==================== NODE 2: THE MECHANICAL GATE ==================== -->
+  <g transform="translate(460, 110)">
+    <rect width="280" height="240" rx="10" fill="url(#gateGrad)" stroke="#10B981" stroke-width="2"/>
+    <!-- Radar Wave for Live Gate Verification -->
+    <circle cx="140" cy="50" r="14" fill="none" stroke="#34D399" stroke-width="2" class="radar-wave"/>
+    <circle cx="140" cy="50" r="8" fill="#10B981"/>
+
+    <text x="140" y="86" text-anchor="middle" fill="#A7F3D0" font-size="10.5" font-weight="800" letter-spacing="1">MECHANICAL GATE</text>
+    <text x="140" y="108" text-anchor="middle" fill="#FFFFFF" font-size="18" font-weight="800">gate.sh Verification</text>
+    <text x="140" y="126" text-anchor="middle" fill="#6EE7B7" font-size="11.5">Detached Ephemeral Worktree</text>
+
+    <!-- Checklist -->
+    <g transform="translate(30, 150)" font-size="11.5" fill="#E2E8F0">
+      <rect x="0" y="0" width="220" height="22" rx="4" fill="#064E3B" stroke="#047857" stroke-width="1"/>
+      <text x="10" y="15" fill="#6EE7B7" font-weight="bold">✓</text>
+      <text x="26" y="15">Linter &amp; Syntax (ShellCheck/Ruff)</text>
+
+      <rect x="0" y="28" width="220" height="22" rx="4" fill="#064E3B" stroke="#047857" stroke-width="1"/>
+      <text x="10" y="43" fill="#6EE7B7" font-weight="bold">✓</text>
+      <text x="26" y="43">Automated Test Suite (100% Pass)</text>
+
+      <rect x="0" y="56" width="220" height="22" rx="4" fill="#064E3B" stroke="#047857" stroke-width="1"/>
+      <text x="10" y="71" fill="#6EE7B7" font-weight="bold">✓</text>
+      <text x="26" y="71">Zero Test Deletions Guard</text>
+    </g>
+  </g>
+
+  <!-- ==================== NODE 3: THE REVIEWER AGENT ==================== -->
+  <g transform="translate(830, 80)">
+    <rect width="290" height="290" rx="10" fill="url(#reviewerGrad)" stroke="#F59E0B" stroke-width="1.8"/>
+    <!-- Header -->
+    <rect width="290" height="42" rx="10" fill="#78350F" opacity="0.4"/>
+    <text x="18" y="26" fill="#FBBF24" font-size="11" font-weight="800" letter-spacing="1">AGENT B • REVIEWER</text>
+    <rect x="200" y="12" width="75" height="18" rx="9" fill="#2D1503" stroke="#F59E0B" stroke-width="1"/>
+    <text x="237" y="24" text-anchor="middle" fill="#FDE68A" font-size="9" font-weight="600">ISOLATED</text>
+
+    <!-- Main Title -->
+    <text x="18" y="72" fill="#F8FAFC" font-size="20" font-weight="700">The Reviewer</text>
+    <text x="18" y="94" fill="#FCD34D" font-size="12">Claude Code (Read-Only Worktree)</text>
+
+    <!-- Separation Line -->
+    <line x1="18" y1="110" x2="272" y2="110" stroke="#78350F" stroke-width="1"/>
+
+    <!-- Checklist -->
+    <g transform="translate(18, 130)" font-size="12" fill="#CBD5E1">
+      <text y="0" font-weight="600" fill="#FBBF24">●</text>
+      <text x="16" y="0">Inspects raw diff against task spec</text>
+      
+      <text y="28" font-weight="600" fill="#FBBF24">●</text>
+      <text x="16" y="28">Adversarial mutation test checks</text>
+      
+      <text y="56" font-weight="600" fill="#FBBF24">●</text>
+      <text x="16" y="56">Multi-model consensus option</text>
+      
+      <text y="84" font-weight="600" fill="#10B981">✓</text>
+      <text x="16" y="84" fill="#6EE7B7" font-weight="600">ACCEPT: Merges commit to main</text>
+      
+      <text y="112" font-weight="600" fill="#EF4444">✗</text>
+      <text x="16" y="112" fill="#FCA5A5" font-weight="600">REVISE: Returns actionable feedback</text>
+    </g>
+  </g>
+
+  <!-- Bottom Proof Bar -->
+  <rect x="80" y="388" width="1040" height="36" rx="6" fill="#141A28" stroke="#2A3652" stroke-width="1"/>
+  <text x="50%" y="411" text-anchor="middle" fill="#94A3B8" font-size="11.5" font-weight="600" letter-spacing="0.4">
+    <tspan fill="#10B981">●</tspan> SEPARATION OF POWERS   |   
+    <tspan fill="#3B82F6">●</tspan> NO TEST DELETIONS   |   
+    <tspan fill="#06B6D4">●</tspan> SECOND OPINION MULTI-MODEL SYNTHESIS   |   
+    <tspan fill="#F59E0B">●</tspan> 100% REPRODUCIBLE RECEIPTS
+  </text>
+</svg>
