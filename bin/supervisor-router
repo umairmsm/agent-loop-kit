@@ -541,6 +541,8 @@ def run_agy(model_name, system_prompt, user_prompt, schema_text, timeout_sec=900
         return None, "neither agy-resume nor agy found in PATH"
 
     combined_prompt = f"{system_prompt}\n\n---\n\n{user_prompt}"
+    # "model@effort" (e.g. claude-opus-5-5@high): agy 1.4.8 takes the reasoning effort as its own flag.
+    model_name, _, effort = model_name.partition("@")
     cmd = [
         agy_bin, "-p", combined_prompt,
         "--model", model_name,
@@ -548,6 +550,8 @@ def run_agy(model_name, system_prompt, user_prompt, schema_text, timeout_sec=900
         "--output-format", "json",
         "--print-timeout", f"{int(timeout_sec/60)}m"
     ]
+    if effort:
+        cmd.extend(["--effort", effort])
     if schema_text:
         cmd.extend(["--json-schema", schema_text])
 
@@ -683,16 +687,19 @@ def execute_provider(provider, system_prompt, user_prompt, schema_text):
 
 def run_review(rubric_path, prompt_text, schema_path, out_json_path, second_opinion=False, cascade=None):
     load_repo_config()
+    explicit_cascade = cascade is not None or bool(os.environ.get("SUPERVISOR_CASCADE"))
     cascade = cascade or os.environ.get("SUPERVISOR_CASCADE", "").split() or DEFAULT_CASCADE
     second_opinion = second_opinion or (os.environ.get("SUPERVISOR_SECOND_OPINION", "").lower() in ("1", "true", "yes"))
 
     # Reorder cascade based on preferred model in user config
+    # IMPORTANT: If an explicit cascade was specified (e.g. for repo privacy), do NOT inject
+    # external models from user config if they are not part of the explicit cascade!
     cfg = load_user_config()
     pref = cfg.get("preferred_model")
     if pref:
         if pref in cascade:
             cascade = [pref] + [p for p in cascade if p != pref]
-        else:
+        elif not explicit_cascade:
             cascade = [pref] + cascade
 
     # 1. Read rubric & schema for prefix-caching static prompt
