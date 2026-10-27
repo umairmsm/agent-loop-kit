@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# agy-supervise: the routine supervisor as a script (no LLM). Runs agy-loop, reads why it stopped,
+# and restarts it after waiting out quota/limit/infra stops. It pings ntfy and stops for anything that
+# needs judgement (escalation, BLOCKED, 3 failed reviews, dirty tree, login). See devops/agent-team/sdd/SUPERVISOR.md.
+#
+# Usage: agy-supervise <task-file> [--dry-run]      run from the repo root (where .supervision/ lives)
+#   --dry-run: read the last STOP line in .supervision/loop.log, print the action, change nothing.
+# Env: SUPERVISE_MAX_RESTARTS (default 12), SUPERVISE_INFRA_WAIT (900 s), SUPERVISE_LIMIT_WAIT (1800 s).
+set -uo pipefail
+TASK="${1:?usage: agy-supervise <task-file> [--dry-run]}"; DRY="${2:-}"
+LOG=.supervision/loop.log
+OUT="${SUPERVISE_OUT:-.supervision/supervise.out}"
+MAX="${SUPERVISE_MAX_RESTARTS:-12}"
+say()    { echo "$(date '+%F %T') supervise: $*" | tee -a "$LOG"; }
+notify() { local t; t="$(cat ~/.config/agy-guard/ntfy-topic 2>/dev/null)" || return 0
+           curl -s -m 8 -H "Title: $1" -H "Priority: ${3:-default}" -d "$2" "https://ntfy.sh/$t" >/dev/null 2>&1 || true; }
+
+# Seconds until "Resets in 4h15m42s" / "resets 10:40am", plus 5 min; else the given default.
+wait_for() {  # $1 = text, $2 = default seconds
+  python3 - "$1" "$2" <<'PY'
+import re, sys, datetime as dt
+t, dflt = sys.argv[1], int(sys.argv[2])
+m = re.search(r"Resets in (?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", t)
+if m and any(m.groups()):
+    h, mi, s = (int(x or 0) for x in m.groups()); print(h*3600 + mi*60 + s + 300); sys.exit()
+m = re.search(r"resets (\d{1,2})(?::(\d{2}))?\s*(am|pm)", t, re.I)
+if m:
+    h = int(m.group(1)) % 12 + (12 if m.group(3).lower() == "pm" else 0); mi = int(m.group(2) or 0)
+    now = dt.datetime.now(); at = now.replace(hour=h, minute=mi, second=0)
+    if at <= now: at += dt.timedelta(days=1)
+    print(int((at - now).total_seconds()) + 300); sys.exit()
+print(dflt)
+PY
+}
+
+preflight() {  # local DDEV must say "local" and serve / and /fr/
+  local wp=wordpress/projectmorocco2 env
+  [ -d "$wp" ] || return 0
+  env="$(cd "$wp" && ddev wp eval 'echo wp_get_environment_type();' 2>/dev/null)"
+  if [ "$env" != "local" ]; then
+    say "preflight: environment type '$env'; writing .ddev/config.local.yaml and restarting DDEV"
+    [ -n "$DRY" ] && return 0
+    printf "web_environment:\n  - WP_ENVIRONMENT_TYPE=local\n" > "$wp/.ddev/config.local.yaml"
+    (cd "$wp" && ddev restart >/dev/null 2>&1)
+  fi
+  for u in / /fr/; do
+    [ "$(curl -sk -o /dev/null -w '%{http_code}' "https://projectmorocco2.ddev.site$u")" = 200 ] || { say "preflight: $u not 200"; return 1; }
+  done
+}
+
+decide() {  # $1 = last STOP line, $2 = the log lines just before it. Echo: "restart <secs>" | "stop <title>|<message>" | "done"
+  local s="$1" ctx="${2:-}"
+  # Quota and Claude-limit text sits on the lines above a generic "failed N times" STOP.
+  case "$s" in *"failed"*"times in a row"*|*"gave no verdict"*)
+    case "$ctx" in
+      *"session limit"*) echo "restart $(wait_for "$ctx" "${SUPERVISE_LIMIT_WAIT:-1800}")"; return ;;
+      *"quota reached"*|*"RESOURCE_EXHAUSTED"*)
+        # A reviewer "no verdict" is never a reason to wait out another model group's weekly reset.
+        case "$s" in *"gave no verdict"*) echo "restart ${SUPERVISE_LIMIT_WAIT:-1800}"; return ;; esac
+        echo "restart $(wait_for "$ctx" 3600)"; return ;;
+    esac ;;
+  esac
+  case "$s" in
+    *"steps APPROVED on"*) echo "done" ;;
+    *"quota reached"*|*"RESOURCE_EXHAUSTED"*) echo "restart $(wait_for "$s" 3600)" ;;
+    *"gave no verdict"*|*"session limit"*) echo "restart $(wait_for "$s" "${SUPERVISE_LIMIT_WAIT:-1800}")" ;;
+    *"uthentication"*|*"login"*) echo "stop Login needed|Antigravity needs a login on $(hostname). Run agy once in a normal shell, then rerun agy-supervise." ;;
+    *"uncommitted changes"*) echo "stop Dirty tree|Working tree has uncommitted changes. Decide: commit or stash, then rerun." ;;
+    *"needs your decision"*|*"ESCALAT"*|*"BLOCKED"*) echo "stop Decision needed|$s" ;;
+    *"failed review"*) echo "stop Review failed 3x|$s" ;;
+    *"failed 4 times in a row"*|*"infrastructure"*|*"gate.sh crashed"*|*"preflight failed"*) echo "restart ${SUPERVISE_INFRA_WAIT:-900}" ;;
+    *"gate or reviewer files changed"*) echo "stop Tamper check|Gate/reviewer files changed. If you did it: agy-loop $TASK --rebaseline" ;;
+    *) echo "stop Loop stopped|$s" ;;
+  esac
+}
+
+last_stop() { grep -E "STOP|steps APPROVED on" "$LOG" | tail -1; }
+stop_ctx()  { grep -B15 -E "STOP|steps APPROVED on" "$LOG" | tail -16; }
+
+if [ -n "$DRY" ]; then
+  s="$(last_stop)"; echo "last: $s"; echo "action: $(decide "$s" "$(stop_ctx)")"; preflight; exit 0
+fi
+
+n=0
+while :; do
+  preflight || { notify "Preflight failed" "DDEV or the site is not answering on $(hostname)" high; exit 1; }
+  say "starting agy-loop $TASK (restart $n of $MAX)"
+  agy-loop "$TASK" >> "$OUT" 2>&1
+  s="$(last_stop)"
+  a="$(decide "$s" "$(stop_ctx)")"
+  say "agy-loop exited: ${s:0:200} -> $a"
+  case "$a" in
+    done) notify "Loop done" "$TASK finished on $(hostname)" default; exit 0 ;;
+    restart*)
+      n=$((n+1)); [ "$n" -le "$MAX" ] || { notify "Too many restarts" "$s" high; exit 1; }
+      secs="${a#restart }"
+      if [ "$secs" -gt 21600 ]; then notify "Long wait" "Would wait $((secs/3600)) h: ${s:0:200}. Stopped instead." high; exit 2; fi
+      say "waiting ${secs}s, then restarting"
+      notify "Loop paused" "Waiting $((secs/60)) min: ${s:0:300}" low
+      sleep "$secs" ;;
+    stop*)
+      t="${a#stop }"; notify "${t%%|*}" "${t#*|} (review: $(python3 -c 'import json;d=json.load(open(".supervision/review.json"));print(d["verdict"], "; ".join(d.get("fix_list",[]))[:400])' 2>/dev/null))" high
+      exit 2 ;;
+  esac
+done

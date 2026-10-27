@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""review-text-to-json: turn a reviewer's plain-text answer (step-review rubric "Output" format) into the
+agy-loop review JSON, with no LLM call. It replaces the Haiku converter when REVIEWER=agy.
+
+Usage: review-text-to-json <text-file> <out.json>    exit 0 if a verdict was found, else 1.
+The decision is copied, never inferred: no "APPROVED"/"CHANGES_REQUIRED" token means no verdict.
+"""
+import json
+import re
+import sys
+
+txt = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+m = re.search(r"\b(APPROVED|CHANGES_REQUIRED)\b", txt)
+if not m or "VOID:" in txt[:40]:
+    sys.exit(1)
+# The first explicit "STEP n sha: X" line wins over any later mention.
+head = re.search(r"STEP\s+\S+\s+\S+:\s*(APPROVED|CHANGES_REQUIRED)", txt)
+verdict = (head or m).group(1)
+
+esc_m = re.search(r"escalate:\s*(true|false)\s*(?:[—-]\s*(.*))?", txt, re.I)
+escalate = bool(esc_m and esc_m.group(1).lower() == "true")
+reason = (esc_m.group(2) or "").strip() if esc_m and escalate else ""
+
+fixes = []
+fx = re.search(r"fix list[^\n]*\n(.*?)(?:\n\s*draft notes|\Z)", txt, re.I | re.S)
+if fx:
+    for line in fx.group(1).splitlines():
+        lm = re.match(r"\s*\d+[.)]\s+(.*)", line)
+        if lm:
+            fixes.append(lm.group(1).strip())
+        elif fixes and line.strip() and not re.match(r"\s*\w[\w ]*:\s", line):
+            fixes[-1] += " " + line.strip()
+
+notes_m = re.search(r"draft notes[^:]*:\s*(.*)", txt, re.I | re.S)
+notes = (notes_m.group(1) if notes_m else txt)[:1500].strip()
+
+if verdict == "CHANGES_REQUIRED" and not fixes:
+    # No "fix list" section: take the reviewer's own numbered lines from anywhere in the text.
+    fixes = [m2.group(1).strip() for m2 in re.finditer(r"^\s*\d+[.)]\s+(.+)$", txt, re.M)][:10]
+if verdict == "CHANGES_REQUIRED" and not fixes and not escalate:
+    fixes = ["Reviewer asked for changes but gave no numbered fix list. Its notes: " + notes[:600]]
+
+json.dump({"verdict": verdict, "escalate": escalate, "escalate_reason": reason,
+           "fix_list": fixes, "notes": notes}, open(sys.argv[2], "w"), indent=1)
+sys.exit(0)

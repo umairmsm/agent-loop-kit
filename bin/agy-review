@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# agy-review: run a read-only review with any Antigravity model (default: Claude Sonnet via Antigravity's own
+# quota, so the builder (Gemini Flash) and the reviewer are different model families, and the Claude Code
+# subscription is not used).
+#
+# Usage: agy-review <rubric.md> <prompt-text> <schema-json-or-file> <out.json>
+#   out.json gets {"structured_output": {...}, "result": "<text>"} like `claude -p --output-format json`,
+#   so agy-loop's review() parses both the same way.
+# Model: AGY_REVIEW_MODEL (default claude-sonnet-4-6); fallbacks AGY_REVIEW_FALLBACKS (space-separated).
+# Read-only proof: HEAD and `git status --porcelain` must be identical before and after, or the verdict is voided.
+set -uo pipefail
+export AGY_READONLY=1   # agy-safe blocks git commit/reset/checkout/stash/... for reviewers
+rubric="$1"; prompt="$2"; schema="$3"; out="$4"
+models="${AGY_REVIEW_MODEL:-claude-sonnet-4-6} ${AGY_REVIEW_FALLBACKS-gpt-oss-120b-medium gemini-3.8-flash-high}"
+AGY="${AGY_REVIEW_BIN:-$HOME/.local/bin/agy-resume}"  # resumes the review after "stream interrupted"
+before="$(git rev-parse HEAD) $(git status --porcelain --untracked-files=no | sha256sum)"
+
+full="$(cat "$rubric")
+
+---
+$prompt
+Answer in the JSON schema. Put the per-file, spec-item and test findings in notes."
+
+SKIP_DIR="$HOME/.cache/agy-review"; mkdir -p "$SKIP_DIR"
+for m in $models; do
+  if [ -f "$SKIP_DIR/$m" ] && [ "$(date +%s)" -lt "$(cat "$SKIP_DIR/$m")" ]; then
+    echo "agy-review: skipping $m (quota exhausted until $(date -d @"$(cat "$SKIP_DIR/$m")" '+%F %H:%M'))" >&2; continue
+  fi
+  raw="${out%.json}.$m.agy.json"
+  "$AGY" -p "$full" --model "$m" --mode plan --output-format json --json-schema "$schema" --print-timeout 40m > "$raw" 2>>"${AGY_REVIEW_LOG:-/dev/null}"
+  after="$(git rev-parse HEAD) $(git status --porcelain --untracked-files=no | sha256sum)"
+  if [ "$before" != "$after" ]; then
+    echo "agy-review: reviewer ($m) changed the checkout; verdict voided" >&2
+    python3 -c 'import json,sys; json.dump({"structured_output":{},"result":"VOID: reviewer changed the checkout"},open(sys.argv[1],"w"))' "$out"
+    exit 3
+  fi
+  # agy json: {"status","response","error",...}; response may be the JSON object or text.
+  if python3 - "$raw" "$out" "$m" <<'PY'
+import json, re, sys
+raw, out, model = sys.argv[1:]
+try:
+    d = json.load(open(raw))
+except Exception:
+    sys.exit(1)
+resp = d.get("response") or ""
+# A stream cut at the very end marks the run ERROR but can still carry the full answer; use it if a verdict is in it.
+if d.get("status") != "SUCCESS" and not re.search(r"\b(APPROVED|CHANGES_REQUIRED)\b", str(resp)):
+    sys.exit(1)
+s = {}
+if isinstance(resp, dict):
+    s = resp
+else:
+    # The answer may wrap the JSON in prose: take the first {...} object that has a verdict.
+    dec = json.JSONDecoder()
+    for i, ch in enumerate(resp):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = dec.raw_decode(resp[i:])
+        except Exception:
+            continue
+        if isinstance(obj, dict) and obj.get("verdict") in ("APPROVED", "CHANGES_REQUIRED"):
+            s = obj
+            break
+if not s and isinstance(resp, str):
+    # JSON without a verdict field: take the first JSON object, and copy the decision from its own text.
+    dec = json.JSONDecoder()
+    for i, ch in enumerate(resp):
+        if ch == "{":
+            try:
+                obj, _ = dec.raw_decode(resp[i:])
+            except Exception:
+                continue
+            if isinstance(obj, dict) and ("notes" in obj or "fix_list" in obj):
+                m = re.search(r"STEP\s+\S+\s+\S+:\s*(APPROVED|CHANGES_REQUIRED)", obj.get("notes", "") + "\n" + resp)
+                if m:
+                    obj["verdict"] = m.group(1)
+                    obj.setdefault("escalate", False); obj.setdefault("escalate_reason", ""); obj.setdefault("fix_list", [])
+                    s = obj
+                break
+if not isinstance(s, dict) or s.get("verdict") not in ("APPROVED", "CHANGES_REQUIRED"):
+    s = {}
+if s:
+    if s["verdict"] == "CHANGES_REQUIRED" and not s.get("fix_list"):
+        # The builder only sees fix_list: never hand it an empty list.
+        s["fix_list"] = ["Reviewer asked for changes without a numbered list. Its notes: " + s.get("notes", "")[:800]]
+    s["notes"] = f"[reviewer: {model}] " + s.get("notes", "")
+json.dump({"structured_output": s, "result": resp if isinstance(resp, str) else json.dumps(resp)}, open(out, "w"))
+sys.exit(0)
+PY
+  then exit 0; fi
+  secs="$(python3 -c 'import json,re,sys; d=json.load(open(sys.argv[1])); e=str(d.get("error") or ""); m=re.search(r"quota reached.*?Resets in (?:(\d+)h)?(?:(\d+)m)?",e); print((int(m.group(1) or 0)*3600+int(m.group(2) or 0)*60) if m else 0)' "$raw" 2>/dev/null || echo 0)"
+  [ "${secs:-0}" -gt 0 ] && echo $(( $(date +%s) + secs )) > "$SKIP_DIR/$m"
+  echo "agy-review: $m gave no usable answer (raw: $raw); trying next model" >&2
+done
+python3 -c 'import json,sys; json.dump({"structured_output":{},"result":""},open(sys.argv[1],"w"))' "$out"
+exit 1

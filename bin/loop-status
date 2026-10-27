@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# loop-status: one-screen answer to "is the loop running, and what is it doing?"
+# Usage: loop-status [repo]   (default: ProjectMorocco2)
+R="${1:-}"
+if [ -z "$R" ]; then
+  if [ -d "$PWD/.supervision" ]; then
+    R="$PWD"
+  elif [ -d "$HOME/work/ProjectMorocco2/.supervision" ]; then
+    R="$HOME/work/ProjectMorocco2"
+  else
+    R="/media/umair/DataDrive/workspace/morocco/ProjectMorocco2"
+  fi
+fi
+cd "$R" || exit 1
+L=.supervision/loop.log
+echo "== $(basename "$R")   $(date '+%F %H:%M')"
+if pgrep -f "bin/agy-supervise" >/dev/null; then echo "watchdog : RUNNING (agy-supervise)"; else echo "watchdog : not running"; fi
+lp="$(for p in $(pgrep -f 'bin/agy-loop'); do [ "$(readlink /proc/$p/cwd)" = "$PWD" ] && echo $p; done | head -1)"
+if [ -n "$lp" ]; then echo "loop     : RUNNING ($(tr '\0' ' ' < /proc/$lp/cmdline | grep -oE 'docs/supervision/[^ ]+'))"; else echo "loop     : STOPPED"; fi
+bp="$(for p in $(pgrep -f 'agy -p You are the BUILDER'); do [ "$(readlink /proc/$p/cwd)" = "$PWD" ] && echo $p; done | head -1)"
+[ -n "$bp" ] && echo "builder  : working for $(ps -o etime= -p "$bp" | tr -d ' ')"
+acct="$(grep -ohE '[a-z0-9._]+@gmail\.com' "$(ls -t ~/.gemini/antigravity-cli/log/cli-*.log 2>/dev/null | head -1)" 2>/dev/null | sort -u | tr '\n' ' ')"
+echo "agy acct : ${acct:-unknown}"
+[ -f .supervision/loop-state.json ] && python3 -c 'import json;d=json.load(open(".supervision/loop-state.json"));print("position :", d["task"].split("/")[-1], " step", d["step"], " attempt", d["attempt"])'
+echo "reviewer : $(grep -oE '^REVIEWER="[a-z]+"' .supervision/loop.conf 2>/dev/null || echo 'REVIEWER="claude" (default)')"
+echo "-- last events"
+grep -E "building|commit [0-9a-f]{7}|APPROVED|CHANGES_REQUIRED|ESCALAT|STOP|supervise:|claims audit|steps APPROVED" "$L" | tail -6 | cut -c1-170

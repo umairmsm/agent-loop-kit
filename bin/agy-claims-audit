@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# agy-claims-audit: read-only claims audit of customer-facing copy changed by one commit, with any
+# Antigravity model (default Claude Sonnet through Antigravity's quota). Rubric: .supervision/rubrics/claims-audit.md.
+# Usage: agy-claims-audit <task-file> <step-number> <sha> <prev-sha>
+# Writes .supervision/audits/step-<n>-<sha7>.md. Exit: 0 PASS, 1 PASS WITH FIXES, 2 FAIL, 3 no answer or voided.
+set -uo pipefail
+export AGY_READONLY=1   # agy-safe blocks git commit/reset/checkout/stash/... for reviewers
+TASK="$1"; STEP="$2"; SHA="$3"; PREV="$4"
+RUB=.supervision/rubrics/claims-audit.md
+OUTD=.supervision/audits; mkdir -p "$OUTD"; OUT="$OUTD/step-$STEP-${SHA:0:7}.md"
+AGY="${AGY_REVIEW_BIN:-$HOME/.local/bin/agy-resume}"  # resumes the review after "stream interrupted"
+models="${AGY_REVIEW_MODEL:-claude-sonnet-4-6} ${AGY_REVIEW_FALLBACKS:-gpt-oss-120b-medium gemini-3.8-flash-high}"
+files="$(git diff --name-only "$PREV" "$SHA" | grep -E '\.(json|po|php|md)$' | grep -vE '^(tests|scripts/parity|\.supervision)/' | tr '\n' ' ')"
+[ -n "$files" ] || { echo "VERDICT: PASS (no copy files changed)" > "$OUT"; exit 0; }
+before="$(git rev-parse HEAD) $(git status --porcelain --untracked-files=no | sha256sum)"
+prompt="$(cat "$RUB")
+
+---
+Audit the customer-facing copy changed in commit $SHA (since $PREV) for task $TASK, step $STEP.
+Changed files: $files
+Compare against the source of truth named in the rubric (English twins in the local DB, policy.php, the task's copy rules).
+Answer in the rubric's Output format, starting with the VERDICT line."
+for m in $models; do
+  raw="$(mktemp)"
+  "$AGY" -p "$prompt" --model "$m" --mode plan --output-format json --print-timeout 40m > "$raw" 2>/dev/null
+  after="$(git rev-parse HEAD) $(git status --porcelain --untracked-files=no | sha256sum)"
+  [ "$before" = "$after" ] || { echo "VOID: the auditor changed the checkout" > "$OUT"; rm -f "$raw"; exit 3; }
+  if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=d.get("response") or ""; sys.exit(0 if d.get("status")=="SUCCESS" and "VERDICT" in r else 1); open(sys.argv[2],"w").write(r)' "$raw" "$OUT" 2>/dev/null; then
+    python3 -c 'import json,sys; open(sys.argv[2],"w").write("<!-- auditor: "+sys.argv[3]+" -->\n"+json.load(open(sys.argv[1]))["response"])' "$raw" "$OUT" "$m"
+    rm -f "$raw"
+    v="$(grep -m1 -oE 'VERDICT: *(PASS WITH FIXES|PASS|FAIL)' "$OUT")"
+    case "$v" in *FAIL) exit 2 ;; *"WITH FIXES") exit 1 ;; *PASS) exit 0 ;; esac
+    exit 3
+  fi
+  rm -f "$raw"
+done
+exit 3
