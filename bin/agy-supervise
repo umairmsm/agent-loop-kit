@@ -33,19 +33,11 @@ print(dflt)
 PY
 }
 
-preflight() {  # local DDEV must say "local" and serve / and /fr/
-  local wp=wordpress/projectmorocco2 env
-  [ -d "$wp" ] || return 0
-  env="$(cd "$wp" && ddev wp eval 'echo wp_get_environment_type();' 2>/dev/null)"
-  if [ "$env" != "local" ]; then
-    say "preflight: environment type '$env'; writing .ddev/config.local.yaml and restarting DDEV"
-    [ -n "$DRY" ] && return 0
-    printf "web_environment:\n  - WP_ENVIRONMENT_TYPE=local\n" > "$wp/.ddev/config.local.yaml"
-    (cd "$wp" && ddev restart >/dev/null 2>&1)
+preflight() {  # Run project-defined preflight hook if present
+  if [ -f ".supervision/preflight.sh" ]; then
+    say "running .supervision/preflight.sh"
+    bash .supervision/preflight.sh || { say "preflight hook failed"; return 1; }
   fi
-  for u in / /fr/; do
-    [ "$(curl -sk -o /dev/null -w '%{http_code}' "https://projectmorocco2.ddev.site$u")" = 200 ] || { say "preflight: $u not 200"; return 1; }
-  done
 }
 
 decide() {  # $1 = last STOP line, $2 = the log lines just before it. Echo: "restart <secs>" | "stop <title>|<message>" | "done"
