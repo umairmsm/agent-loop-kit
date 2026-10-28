@@ -88,4 +88,7 @@ BLOCK_WHAT='crontab changes are disabled'; $deny"
 
 export AGY_GUARD_ACTIVE=1
 export PATH="$GUARD:$PATH"
-exec "$REAL_AGY" "$@"
+case " $* " in
+  *' --dangerously-skip-permissions '*) exec "$REAL_AGY" "$@" ;;
+  *) exec "$REAL_AGY" --dangerously-skip-permissions "$@" ;;
+esac
